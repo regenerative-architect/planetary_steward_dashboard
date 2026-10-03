@@ -1,0 +1,1237 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Civic Benevolence Dashboard</title>
+<!--
+  ============================================================================
+  CIVIC BENEVOLENCE DASHBOARD
+  ----------------------------------------------------------------------------
+  Provenance: drafted by Claude (Anthropic) for the requesting user.
+
+  THIS REVISION answers ten self-posed questions about what the project
+  still needed, and solves each in place:
+  1. Added a "How this works" disclosure on Overview explaining the
+     Live/Cached/Calculated/Reference/Unavailable system in plain language —
+     the original brief's "how to use this" requirement, unaddressed until now.
+  2. Added a consolidated Attributions &amp; Licensing disclosure on Take
+     Action listing every real source this file draws from in one place.
+  3. Added a "what the dots mean" legend in the sidebar, generated from the
+     same TIER_INFO object the badges use, so it can't drift out of sync.
+  4. Added a live "X of Y sources reachable" health line in the sidebar,
+     computed from layerStatus.
+  5. Added arrow-key/Home/End navigation across sidebar tabs (the ARIA tabs
+     keyboard pattern), and fixed a real bug found while implementing it:
+     switching sections didn't reset scroll position, so moving from a tall
+     section to a short one could leave the view scrolled past all content.
+  6. Added a skip-to-content link, the standard first-focusable-element
+     pattern for keyboard users.
+  7. Increased padding/min-height on nav items and buttons toward the
+     WCAG-recommended ~44px touch target.
+  8. Added a dismissible-by-retry banner that appears specifically when
+     every live source failed at once (as opposed to one card being
+     unavailable), naming the sandbox-network cause plainly instead of
+     leaving every card to independently say "unavailable."
+  9. Folded "quick ways in" example workflows into the same How This Works
+     disclosure from #1 — what to check for current events vs. longer-term
+     trends vs. finding somewhere to help.
+  10. Fixed the print stylesheet's status dots, which were being forced to
+      flat gray and losing their meaning on paper — now keep their real
+      semantic color, which is legible on white paper without adjustment.
+  Nothing about the underlying data changed — every loader, cache, and
+  fallback chain is identical to the previous revision. Completed August 2026.
+
+  WHAT EVERY FIGURE ON THIS PAGE IS, LABELED ON EVERY CARD (see the "what
+  the dots mean" legend in the sidebar for the same thing in-app):
+  Live (fetched just now) / Cached (last successful fetch, saved locally) /
+  Calculated (real math, no network) / Reference (hand-verified, dated, not
+  live-polled) / Unavailable (fetch and cache both failed — shown plainly).
+  There is no "simulated" tier anywhere in this file.
+
+  SECTIONS AND WHAT POWERS THEM:
+  - Overview: LIVE CO2 / temperature anomaly / emissions (ClimateObservatory.org
+    → NOAA GML + NASA GISTEMP + Global Carbon Project), plus the How This
+    Works disclosure.
+  - Live Earth Monitor: LIVE earthquakes (USGS→EMSC), NASA EONET hazard
+    events, NOAA SWPC space weather, Open-Meteo reference weather,
+    CALCULATED astronomy, plus a Sources & Status disclosure.
+  - Environment group (Climate & Atmosphere, Oceans, Biodiversity,
+    Satellites): REFERENCE, hand-verified, dated, sourced. Biome & Hazard
+    Map within the same group is LIVE (NASA EONET, geographically bucketed).
+  - Humanitarian Response: LIVE GDACS alert levels + LIVE ReliefWeb (UN
+    OCHA) report metadata. Never computes or displays a casualty or
+    displacement figure itself.
+  - Take Action: real, verified links, plus the Attributions disclosure.
+  Plus client-side search (Ctrl/Cmd+K) built from what's actually rendered,
+  and a print stylesheet for the real page content.
+
+  SANDBOX CAVEAT: environments that render HTML artifacts — including,
+  commonly, Claude.ai's in-chat preview — often restrict outbound network
+  requests from inside the sandboxed frame. Every fetch is wrapped in
+  try/catch with a timeout, degrading to Cached or Unavailable rather than
+  breaking, and the new all-sources-down banner (point 8 above) surfaces
+  this plainly to the person using the page, not just in this comment.
+
+  NETWORK: read-only GET requests only, to the sources named in Live Earth
+  Monitor's Sources & Status section, on a 5-minute auto-refresh plus a
+  manual button (rate-limited to once per 20s). Nothing about the user or
+  device is ever sent. The only local storage is the last-viewed section
+  and cached copies of the data above, in this browser's own IndexedDB,
+  never transmitted anywhere. No tracking or telemetry.
+
+  SECURITY NOTE: every value from an external API (earthquake place names,
+  ReliefWeb report names, GDACS event names, etc.) passes through
+  escapeHTML() before being inserted into the page — this file builds HTML
+  strings from live network responses, so that escaping is load-bearing.
+  ============================================================================
+-->
+<style>
+  :root {
+    --bg-deep:#0a1220; --bg-side:#0d1626; --bg-mid:#1a2744; --text:#e0e7ff; --muted:#94a3b8;
+    --accent:#3b82f6; --accent2:#10b981; --warn:#fbbf24; --danger:#ef4444;
+  }
+  * { margin:0; padding:0; box-sizing:border-box; }
+  html, body { height:100%; overscroll-behavior:none; }
+  body {
+    font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Arial,sans-serif;
+    background:var(--bg-deep); color:var(--text); height:100vh; overflow:hidden;
+  }
+  .skip-link{position:absolute;left:-9999px;top:0;background:var(--accent);color:#fff;
+    padding:10px 16px;border-radius:0 0 8px 0;z-index:50;font-size:0.85rem;text-decoration:none;font-weight:600;}
+  .skip-link:focus{left:0;}
+  .app-shell{display:flex;height:100vh;}
+
+  /* ---------- Sidebar ---------- */
+  .sidebar{width:270px;flex:0 0 270px;background:var(--bg-side);
+    border-right:1px solid rgba(255,255,255,0.08);display:flex;flex-direction:column;overflow-y:auto;}
+  .sidebar-header{padding:22px 20px 16px;}
+  .sidebar-header h1{font-size:1.05rem;font-weight:700;line-height:1.3;
+    background:linear-gradient(135deg,#60a5fa,#34d399);-webkit-background-clip:text;
+    background-clip:text;-webkit-text-fill-color:transparent;}
+  .sidebar-header .tagline{font-size:0.72rem;color:var(--muted);margin-top:5px;}
+  .sidebar-search-btn{margin:0 16px 18px;padding:11px 12px;min-height:44px;text-align:left;
+    background:rgba(255,255,255,0.05);border:1px solid rgba(255,255,255,0.14);border-radius:9px;
+    color:var(--muted);font-size:0.8rem;cursor:pointer;display:flex;justify-content:space-between;
+    align-items:center;gap:8px;}
+  .sidebar-search-btn:hover{background:rgba(255,255,255,0.09);color:var(--text);}
+  .sidebar-search-btn:focus-visible{outline:2px solid var(--accent);outline-offset:2px;}
+  .sidebar-search-btn kbd{font-size:0.62rem;padding:2px 5px;background:rgba(255,255,255,0.1);
+    border-radius:4px;font-family:inherit;flex:0 0 auto;}
+  .sidebar-nav{flex:1;padding:0 12px 12px;display:flex;flex-direction:column;gap:2px;}
+  .nav-group-label{font-size:0.66rem;text-transform:uppercase;letter-spacing:0.07em;
+    color:#5b6b85;padding:16px 12px 6px;}
+  .nav-item{display:flex;align-items:center;gap:9px;text-align:left;padding:11px 12px;
+    min-height:44px;border-radius:8px;background:none;border:none;color:var(--text);font-size:0.85rem;
+    cursor:pointer;width:100%;}
+  .nav-item:hover{background:rgba(255,255,255,0.06);}
+  .nav-item:focus-visible{outline:2px solid var(--accent);outline-offset:-2px;}
+  .nav-item.active{background:rgba(59,130,246,0.18);color:#93c5fd;font-weight:600;}
+  .nav-item-sub{padding-left:20px;font-size:0.82rem;}
+  .nav-item-spaced{margin-top:14px;}
+  .nav-dot{width:6px;height:6px;border-radius:50%;flex:0 0 auto;background:#4b5a72;}
+  .nav-dot.live{background:#10b981;box-shadow:0 0 6px rgba(16,185,129,0.6);}
+  .sidebar-footer{padding:12px 20px 18px;border-top:1px solid rgba(255,255,255,0.08);
+    display:flex;flex-direction:column;gap:10px;}
+  .data-health{font-size:0.7rem;color:var(--muted);text-align:center;}
+  .data-health.health-warn{color:#fca5a5;font-weight:600;}
+  .legend-details{font-size:0.72rem;}
+  .legend-details summary{cursor:pointer;color:var(--muted);list-style:revert;}
+  .legend-details summary:focus-visible{outline:2px solid var(--accent);outline-offset:2px;}
+  .legend-list{list-style:none;margin-top:8px;display:flex;flex-direction:column;gap:5px;}
+  .legend-list li{display:flex;align-items:center;gap:7px;color:var(--muted);font-size:0.7rem;}
+  .legend-list .dot{width:7px;height:7px;border-radius:50%;flex:0 0 auto;}
+  .refresh-btn{padding:11px 12px;min-height:44px;background:rgba(59,130,246,0.15);
+    border:1px solid rgba(59,130,246,0.4);border-radius:8px;color:var(--text);cursor:pointer;
+    font-size:0.78rem;text-align:center;transition:background .2s;}
+  .refresh-btn:hover:not(:disabled){background:rgba(59,130,246,0.3);}
+  .refresh-btn:disabled{opacity:0.5;cursor:default;}
+  .refresh-btn:focus-visible{outline:2px solid var(--accent);outline-offset:2px;}
+  .utc-clock{font-variant-numeric:tabular-nums;color:#5b6b85;font-size:0.7rem;text-align:center;}
+
+  /* ---------- Mobile drawer behavior ---------- */
+  .mobile-menu-btn{display:none;}
+  .sidebar-overlay{display:none;}
+  @media (max-width:900px){
+    .sidebar{position:fixed;top:0;left:0;bottom:0;z-index:30;width:280px;flex:0 0 280px;
+      transform:translateX(-100%);transition:transform .25s ease;box-shadow:6px 0 30px rgba(0,0,0,0.5);}
+    .sidebar.open{transform:translateX(0);}
+    .sidebar-overlay{display:none;position:fixed;inset:0;background:rgba(0,0,0,0.55);z-index:25;}
+    .sidebar-overlay.visible{display:block;}
+    .mobile-menu-btn{display:flex;align-items:center;justify-content:center;position:fixed;
+      top:14px;left:14px;z-index:20;width:44px;height:44px;border-radius:10px;
+      background:rgba(13,22,38,0.92);border:1px solid rgba(255,255,255,0.15);color:var(--text);
+      font-size:1.1rem;cursor:pointer;backdrop-filter:blur(6px);}
+    .mobile-menu-btn:focus-visible{outline:2px solid var(--accent);outline-offset:2px;}
+    main{padding-top:68px !important;}
+  }
+
+  /* ---------- Main content ---------- */
+  main{flex:1 1 auto;overflow-y:auto;overflow-x:hidden;padding:36px 44px 48px;}
+  .offline-banner{max-width:900px;margin:0 auto 20px;padding:14px 16px;border-radius:10px;
+    background:rgba(251,191,36,0.1);border:1px solid rgba(251,191,36,0.35);
+    font-size:0.84rem;line-height:1.5;display:flex;align-items:center;gap:14px;flex-wrap:wrap;}
+  .offline-banner button{padding:7px 14px;border-radius:7px;border:1px solid rgba(251,191,36,0.5);
+    background:rgba(251,191,36,0.15);color:var(--text);cursor:pointer;font-size:0.78rem;white-space:nowrap;}
+  .offline-banner button:hover{background:rgba(251,191,36,0.28);}
+  .offline-banner button:focus-visible{outline:2px solid var(--accent);outline-offset:2px;}
+  .view{display:none;max-width:900px;margin:0 auto;}
+  .view.active{display:block;}
+  .view h2{font-size:1.4rem;margin-bottom:8px;font-weight:700;}
+  .view .intro{color:var(--muted);font-size:0.88rem;margin-bottom:20px;line-height:1.55;max-width:760px;}
+  .fine-print{color:#64748b;font-size:0.76rem;margin:-8px 0 18px;line-height:1.5;max-width:760px;}
+  .section-sub{font-size:1rem;margin:26px 0 12px;color:#e0e7ff;font-weight:600;}
+  .muted{color:var(--muted);font-size:0.85rem;}
+
+  .card-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:14px;margin-bottom:22px;}
+  .card{background:rgba(255,255,255,0.035);border:1px solid rgba(255,255,255,0.08);border-radius:12px;padding:18px 20px;}
+  .card-header{display:flex;justify-content:space-between;align-items:flex-start;gap:10px;margin-bottom:12px;}
+  .card-header h3{font-size:0.9rem;font-weight:600;line-height:1.3;}
+  .card-body .row{display:flex;justify-content:space-between;align-items:baseline;gap:12px;
+    padding:7px 0;border-bottom:1px solid rgba(255,255,255,0.05);}
+  .card-body .row:last-child{border-bottom:none;}
+  .card-body .label{color:var(--muted);font-size:0.78rem;}
+  .card-body .value{font-weight:600;font-size:0.9rem;text-align:right;}
+  .card-footer{margin-top:12px;font-size:0.66rem;color:#5b6b85;}
+
+  .badge{display:inline-flex;align-items:center;gap:5px;font-size:0.68rem;font-weight:600;
+    color:var(--muted);white-space:nowrap;flex:0 0 auto;}
+  .badge .dot{width:6px;height:6px;border-radius:50%;flex:0 0 auto;}
+
+  .facts-card{background:rgba(255,255,255,0.035);border:1px solid rgba(255,255,255,0.08);
+    border-radius:12px;padding:18px 20px;margin-bottom:16px;}
+  .facts-card > ul{list-style:none;}
+  .facts-card > ul > li{margin-bottom:14px;}
+  .facts-card > ul > li:last-child{margin-bottom:0;}
+  .facts-card p.fact-text{font-size:0.86rem;line-height:1.55;margin-bottom:4px;}
+  .facts-card small{color:#5b6b85;font-size:0.72rem;}
+
+  .status-line{font-size:0.8rem;color:var(--muted);margin-bottom:12px;display:flex;
+    align-items:center;gap:10px;flex-wrap:wrap;}
+
+  .table-wrap{overflow-x:auto;margin-bottom:22px;border:1px solid rgba(255,255,255,0.08);border-radius:12px;}
+  table.data-table{width:100%;border-collapse:collapse;min-width:420px;}
+  table.data-table th, table.data-table td{text-align:left;padding:9px 14px;
+    border-bottom:1px solid rgba(255,255,255,0.06);font-size:0.82rem;}
+  table.data-table th{color:var(--muted);font-weight:600;font-size:0.7rem;
+    text-transform:uppercase;letter-spacing:0.03em;background:rgba(255,255,255,0.025);}
+  table.data-table tbody tr:last-child td{border-bottom:none;}
+  table.data-table tbody tr:hover{background:rgba(255,255,255,0.025);}
+
+  .region-card{border-left:3px solid #10b981;text-align:center;}
+  .region-card.sev-mid{border-left-color:#f59e0b;}
+  .region-card.sev-high{border-left-color:#ef4444;}
+  .region-card h3{font-size:0.85rem;margin-bottom:2px;}
+  .region-count{font-size:2rem;font-weight:700;margin:6px 0 2px;}
+  .region-card .fine-print{margin:0 0 8px;}
+  .region-card .fact-text{font-size:0.78rem;color:#cbd5e1;}
+
+  .alert-list{list-style:none;margin-bottom:4px;}
+  .alert-list li{padding:9px 12px;margin-bottom:8px;border-radius:8px;background:rgba(255,255,255,0.03);
+    font-size:0.85rem;border-left:3px solid;}
+  .alert-list li.alert-red{border-color:#ef4444;}
+  .alert-list li.alert-orange{border-color:#f59e0b;}
+  .alert-level{font-weight:700;font-size:0.7rem;margin-right:8px;}
+  .card-list{display:flex;flex-direction:column;gap:8px;}
+  .list-item{padding:10px 12px;background:rgba(255,255,255,0.03);border-radius:8px;}
+  .list-item-title{font-weight:600;font-size:0.85rem;margin-bottom:3px;}
+  .list-item-meta{font-size:0.73rem;color:var(--muted);}
+
+  .action-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(240px,1fr));gap:14px;margin-bottom:16px;}
+  .action-card{background:rgba(255,255,255,0.035);border:1px solid rgba(255,255,255,0.08);border-radius:12px;padding:16px 18px;}
+  .action-card h3{font-size:0.88rem;color:#e0e7ff;margin-bottom:6px;}
+  .action-card p{font-size:0.78rem;color:var(--muted);line-height:1.45;margin-bottom:10px;}
+  .action-card a{display:inline-block;font-size:0.78rem;color:#60a5fa;text-decoration:underline;}
+  .action-card a:focus-visible{outline:2px solid var(--accent);outline-offset:2px;}
+
+  details.sources-details{margin-top:26px;background:rgba(255,255,255,0.025);
+    border:1px solid rgba(255,255,255,0.08);border-radius:12px;padding:14px 18px;}
+  details.sources-details summary{cursor:pointer;font-weight:600;font-size:0.88rem;list-style:revert;}
+  details.sources-details summary:focus-visible{outline:2px solid var(--accent);outline-offset:3px;}
+  details.sources-details[open] summary{margin-bottom:10px;}
+  .sources-list li{list-style:none;}
+  .sources-list .src-link a{color:#60a5fa;text-decoration:underline;font-size:0.7rem;word-break:break-all;
+    display:block;margin-top:4px;}
+  .howto-content p, .attrib-content p{font-size:0.85rem;line-height:1.6;margin-bottom:10px;color:#cbd5e1;}
+  .howto-content ul, .attrib-content ul{margin:0 0 12px 20px;}
+  .howto-content li, .attrib-content li{font-size:0.84rem;line-height:1.6;margin-bottom:4px;color:#cbd5e1;}
+  .attrib-content h4{font-size:0.82rem;margin:14px 0 6px;color:#e0e7ff;}
+  .attrib-content h4:first-child{margin-top:0;}
+
+  .search-highlight{outline:3px solid var(--accent) !important;outline-offset:3px;}
+
+  .search-panel{position:fixed;inset:0;background:rgba(6,10,18,0.97);z-index:40;
+    padding:60px 24px 24px;overflow-y:auto;}
+  .search-box{display:flex;gap:8px;max-width:600px;margin:0 auto 20px;}
+  #searchInput{flex:1;padding:11px 14px;border-radius:8px;border:1px solid rgba(255,255,255,0.2);
+    background:rgba(255,255,255,0.06);color:#e0e7ff;font-size:0.95rem;}
+  #searchInput:focus{outline:2px solid var(--accent);}
+  #searchInput::placeholder{color:var(--muted);}
+  .search-close-btn{padding:10px 16px;min-height:44px;border-radius:8px;border:1px solid rgba(255,255,255,0.2);
+    background:rgba(255,255,255,0.08);color:#e0e7ff;cursor:pointer;font-size:0.85rem;}
+  .search-close-btn:hover{background:rgba(255,255,255,0.16);}
+  .search-close-btn:focus-visible{outline:2px solid var(--accent);outline-offset:2px;}
+  .search-hint{max-width:600px;margin:0 auto 14px;color:var(--muted);font-size:0.72rem;text-align:center;}
+  .search-results{max-width:600px;margin:0 auto;display:flex;flex-direction:column;gap:10px;}
+  .search-result{background:rgba(255,255,255,0.05);border:1px solid rgba(255,255,255,0.12);
+    border-radius:10px;padding:14px;cursor:pointer;text-align:left;width:100%;
+    color:inherit;font:inherit;display:block;}
+  .search-result:hover, .search-result:focus-visible{background:rgba(255,255,255,0.1);outline:2px solid var(--accent);}
+  .search-result .tag{font-size:0.64rem;color:#60a5fa;text-transform:uppercase;letter-spacing:0.04em;margin-bottom:4px;}
+  .search-result .txt{font-size:0.83rem;color:#e0e7ff;line-height:1.4;}
+  .search-empty{color:var(--muted);font-size:0.85rem;text-align:center;margin-top:24px;}
+
+  .footer-note{position:fixed;left:0;right:0;bottom:0;z-index:2;padding:7px 20px;font-size:0.66rem;
+    color:#5b6b85;background:rgba(6,10,18,0.9);border-top:1px solid rgba(255,255,255,0.06);
+    backdrop-filter:blur(6px);}
+  .footer-note strong{color:#fca5a5;}
+  main{padding-bottom:64px;} /* room for the fixed footer strip */
+
+  .noscript-fallback{padding:40px;max-width:640px;margin:40px auto;
+    background:rgba(255,255,255,0.05);border-radius:12px;line-height:1.6;}
+
+  @media print {
+    .skip-link, .sidebar, .mobile-menu-btn, .sidebar-overlay, .footer-note, .search-panel, .offline-banner { display:none !important; }
+    html, body { height:auto !important; overflow:visible !important; background:#fff !important; color:#111 !important; }
+    .app-shell { display:block !important; }
+    main { overflow:visible !important; padding:0 !important; }
+    .card, .facts-card, .action-card, .region-card, .list-item, .alert-list li, table.data-table {
+      background:#f7f7f7 !important; border-color:#ccc !important; color:#111 !important; }
+    h2, h3, .card-body .value, .list-item-title { color:#111 !important; }
+    .badge { color:#333 !important; }
+    a { color:#1a56db !important; }
+    .intro, .muted, .fine-print, .card-footer, small, .status-line, .list-item-meta,
+    .howto-content p, .howto-content li, .attrib-content p, .attrib-content li { color:#555 !important; }
+  }
+
+  @media (max-width:640px){
+    main{padding:24px 18px 76px;}
+    .view h2{font-size:1.2rem;}
+  }
+</style>
+</head>
+<body>
+
+<a href="#mainContent" class="skip-link">Skip to main content</a>
+
+<div class="app-shell">
+  <button id="mobileMenuBtn" class="mobile-menu-btn" type="button" aria-label="Open navigation menu" aria-expanded="false">☰</button>
+  <div id="sidebarOverlay" class="sidebar-overlay"></div>
+
+  <aside id="sidebar" class="sidebar">
+    <div class="sidebar-header">
+      <h1>🌍 Civic Benevolence<br>Dashboard</h1>
+      <p class="tagline">Real data, labeled honestly. No simulation.</p>
+    </div>
+
+    <button id="searchToggleBtn" class="sidebar-search-btn" type="button" aria-label="Search this dashboard">
+      <span>🔍 Search…</span><kbd>Ctrl K</kbd>
+    </button>
+
+    <nav class="sidebar-nav" aria-label="Dashboard sections">
+      <div class="tab-buttons" role="tablist">
+        <button class="nav-item active" id="tab-overview" data-view="overview" role="tab" aria-selected="true" aria-controls="panel-overview"><span class="nav-dot live"></span>Overview</button>
+        <button class="nav-item" id="tab-live" data-view="live" role="tab" aria-selected="false" aria-controls="panel-live"><span class="nav-dot live"></span>Live Earth Monitor</button>
+
+        <div class="nav-group-label">Environment</div>
+        <button class="nav-item nav-item-sub" id="tab-climate" data-view="climate" role="tab" aria-selected="false" aria-controls="panel-climate"><span class="nav-dot"></span>Climate &amp; Atmosphere</button>
+        <button class="nav-item nav-item-sub" id="tab-oceans" data-view="oceans" role="tab" aria-selected="false" aria-controls="panel-oceans"><span class="nav-dot"></span>Oceans</button>
+        <button class="nav-item nav-item-sub" id="tab-biomes" data-view="biomes" role="tab" aria-selected="false" aria-controls="panel-biomes"><span class="nav-dot live"></span>Biome &amp; Hazard Map</button>
+        <button class="nav-item nav-item-sub" id="tab-biodiversity" data-view="biodiversity" role="tab" aria-selected="false" aria-controls="panel-biodiversity"><span class="nav-dot"></span>Biodiversity</button>
+        <button class="nav-item nav-item-sub" id="tab-satellites" data-view="satellites" role="tab" aria-selected="false" aria-controls="panel-satellites"><span class="nav-dot"></span>Satellites</button>
+
+        <button class="nav-item nav-item-spaced" id="tab-humanitarian" data-view="humanitarian" role="tab" aria-selected="false" aria-controls="panel-humanitarian"><span class="nav-dot live"></span>Humanitarian Response</button>
+        <button class="nav-item" id="tab-action" data-view="action" role="tab" aria-selected="false" aria-controls="panel-action"><span class="nav-dot"></span>Take Action</button>
+      </div>
+    </nav>
+
+    <div class="sidebar-footer">
+      <div id="dataHealth" class="data-health" aria-live="polite"></div>
+      <details class="legend-details">
+        <summary>What the dots mean</summary>
+        <ul class="legend-list" id="legendList"></ul>
+      </details>
+      <button id="refreshLiveBtn" class="refresh-btn" type="button" aria-label="Refresh all live data now">🔄 Refresh Live Data</button>
+      <div class="utc-clock" id="utcClock" aria-live="off">--:--:-- UTC</div>
+    </div>
+  </aside>
+
+  <main id="mainContent">
+    <div id="offlineBanner" class="offline-banner" hidden role="status">
+      <span>⚠️ None of the live sources could be reached just now — sections are showing cached copies or marked "Unavailable" rather than a guess. This can happen if your network or browser blocks these requests (common inside embedded previews).</span>
+      <button id="retryBannerBtn" type="button">Try again</button>
+    </div>
+    <section class="view active" id="panel-overview" role="tabpanel" aria-labelledby="tab-overview" data-view="overview" tabindex="0"></section>
+    <section class="view" id="panel-live" role="tabpanel" aria-labelledby="tab-live" data-view="live" tabindex="0"></section>
+    <section class="view" id="panel-climate" role="tabpanel" aria-labelledby="tab-climate" data-view="climate" tabindex="0"></section>
+    <section class="view" id="panel-oceans" role="tabpanel" aria-labelledby="tab-oceans" data-view="oceans" tabindex="0"></section>
+    <section class="view" id="panel-biomes" role="tabpanel" aria-labelledby="tab-biomes" data-view="biomes" tabindex="0"></section>
+    <section class="view" id="panel-biodiversity" role="tabpanel" aria-labelledby="tab-biodiversity" data-view="biodiversity" tabindex="0"></section>
+    <section class="view" id="panel-humanitarian" role="tabpanel" aria-labelledby="tab-humanitarian" data-view="humanitarian" tabindex="0"></section>
+    <section class="view" id="panel-satellites" role="tabpanel" aria-labelledby="tab-satellites" data-view="satellites" tabindex="0"></section>
+    <section class="view" id="panel-action" role="tabpanel" aria-labelledby="tab-action" data-view="action" tabindex="0"></section>
+  </main>
+</div>
+
+<section id="searchPanel" class="search-panel" hidden role="search" aria-label="Search dashboard content">
+  <div class="search-box">
+    <input id="searchInput" type="text" maxlength="100" autocomplete="off"
+      placeholder="Search facts, figures, organizations…" aria-label="Search dashboard content">
+    <button id="searchCloseBtn" class="search-close-btn" type="button" aria-label="Close search">✕ Close</button>
+  </div>
+  <p class="search-hint">Searches the content already rendered on this page, entirely in your browser — no network call. Press Escape to close.</p>
+  <div id="searchResults" class="search-results"></div>
+</section>
+
+<footer class="footer-note">
+  <!-- Zero Harm & Anti-Coercion: every figure here is labeled Live, Cached,
+       Calculated, Reference, or Unavailable, and nothing is invented. The
+       Humanitarian Response section surfaces real GDACS alert levels and
+       ReliefWeb report metadata only — never a casualty or displacement
+       number computed by this dashboard. No tracking or telemetry; the
+       only local storage is the last-viewed section and cached data, in
+       this browser only. Not an emergency or operational system. -->
+  ⚠️ <strong>Zero Harm &amp; Anti-Coercion:</strong> every figure is labeled Live/Cached/Calculated/Reference/Unavailable —
+  nothing is simulated. Humanitarian Response never computes casualty or displacement numbers itself. No tracking. Not an
+  emergency or operational system — consult primary sources and local authorities directly.
+</footer>
+
+<noscript>
+  <div class="noscript-fallback">
+    <h2>Civic Benevolence Dashboard</h2>
+    <p>This dashboard needs JavaScript enabled to fetch and display its data. In summary: it shows real
+    public data — earthquakes (USGS/EMSC), natural-hazard events (NASA EONET), space weather (NOAA),
+    reference weather (Open-Meteo), atmospheric CO2/temperature/emissions (via ClimateObservatory.org,
+    sourced from NOAA/NASA), and disaster/humanitarian data (GDACS + ReliefWeb/UN OCHA) — plus dated
+    reference facts. Please enable JavaScript to use it.</p>
+  </div>
+</noscript>
+
+<script>
+/* ============================================================================
+   SECTION 1 — SAFETY HELPERS + SHARED UI BUILDERS
+   ============================================================================ */
+function escapeHTML(str){
+  return String(str).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+}
+function ageString(ts){
+  if (!ts) return '—';
+  const s = Math.round((Date.now()-ts)/1000);
+  if (s < 60) return s+'s ago';
+  if (s < 3600) return Math.round(s/60)+'m ago';
+  return Math.round(s/3600)+'h ago';
+}
+const TIER_INFO = {
+  live:        {text:'Live', color:'#10b981', desc:'fetched just now'},
+  cached:      {text:'Cached', color:'#3b82f6', desc:'last successful fetch, saved locally'},
+  calculated:  {text:'Calculated', color:'#a78bfa', desc:'real math, no network needed'},
+  reference:   {text:'Reference', color:'#fbbf24', desc:'hand-verified, dated, not live-polled'},
+  unavailable: {text:'Unavailable', color:'#ef4444', desc:'fetch and cache both failed'},
+  loading:     {text:'Checking…', color:'#94a3b8', desc:'request in progress'}
+};
+function badgeHTML(tier){
+  const b = TIER_INFO[tier] || TIER_INFO.unavailable;
+  return `<span class="badge"><span class="dot" style="background:${b.color}"></span>${b.text}</span>`;
+}
+function renderLegend(){
+  const el = document.getElementById('legendList');
+  if (!el) return;
+  el.innerHTML = Object.entries(TIER_INFO).filter(([k])=>k!=='loading').map(([k,v])=>
+    `<li><span class="dot" style="background:${v.color}"></span>${v.text} — ${v.desc}</li>`).join('');
+}
+function cardHTML(title, status, rowsOrFn){
+  let bodyHTML;
+  if (status.tier === 'loading'){
+    bodyHTML = `<p class="muted">Checking live source…</p>`;
+  } else if (status.tier === 'unavailable' || !status.data){
+    bodyHTML = `<p class="muted">No live or cached data right now.<br><small>(Shown plainly rather than guessed.)</small></p>`;
+  } else {
+    const rows = typeof rowsOrFn === 'function' ? rowsOrFn(status.data) : rowsOrFn;
+    bodyHTML = rows.map(r => `<div class="row"><span class="label">${escapeHTML(r.label)}</span><span class="value"${r.color?` style="color:${r.color}"`:''}>${escapeHTML(r.value)}</span></div>`).join('');
+  }
+  return `<div class="card">
+    <div class="card-header"><h3>${title}</h3>${badgeHTML(status.tier)}</div>
+    <div class="card-body">${bodyHTML}</div>
+    <div class="card-footer">${escapeHTML(status.source||'—')} · updated ${ageString(status.lastUpdated)}</div>
+  </div>`;
+}
+function factsCardHTML(title, facts){
+  const items = facts.map(f => `<li><p class="fact-text">${escapeHTML(f.text)}</p><small>${escapeHTML(f.source)}</small></li>`).join('');
+  return `<div class="facts-card">
+    <div class="card-header"><h3>${title}</h3>${badgeHTML('reference')}</div>
+    <ul>${items}</ul>
+  </div>`;
+}
+
+/* ============================================================================
+   SECTION 2 — REAL, DATED REFERENCE FACTS + STATIC CONTENT
+   ============================================================================ */
+const cryosphereFacts = [
+  { text:'Arctic sea ice reached its 2026 winter maximum on March 15 at about 14.29 million km² — statistically tied with 2025 for the lowest winter peak since satellite records began in 1979.', source:'NASA / NSIDC — verified Aug 2026' },
+  { text:'Global sea level has risen roughly 91mm (3.6 in) since satellite measurements began in 1993, from melting land ice plus warming, expanding seawater.', source:'NASA sea level vital signs — verified Aug 2026' },
+  { text:'Antarctica is losing about 135 billion tons of ice per year and Greenland about 264 billion tons per year, per NASA GRACE/GRACE-FO satellite gravity data.', source:'NASA ice sheet vital signs — verified Aug 2026' }
+];
+const greenhouseGasFacts = [
+  { text:'Global methane (CH4) reached a 2024 annual average of 1,921.79 ppb (up from 1,915.73 ppb in 2023); monthly readings hit a record 1,942 ppb in October 2024.', source:'NOAA GML via Climate.gov — verified Aug 2026' },
+  { text:'Global nitrous oxide (N2O) reached a 2024 annual average of 337.71 ppb, up from 336.59 ppb in 2023.', source:'NOAA GML via Climate.gov — verified Aug 2026' },
+  { text:'The Antarctic ozone hole continues its slow, decades-long recovery under the Montreal Protocol; NASA tracks its size live each spring at ozonewatch.gsfc.nasa.gov.', source:'NASA Ozone Watch / NOAA — verified Aug 2026' }
+];
+const oceanFacts = [
+  { text:'The ocean has absorbed roughly 90% of the excess heat trapped by rising greenhouse gases, and about a quarter to a third of humanity\u2019s CO2 emissions since industrialization.', source:'IPCC / NOAA — well-established, verified Aug 2026' },
+  { text:'That absorbed CO2 has driven roughly a 30% increase in ocean acidity (about 0.1 pH units) since pre-industrial times, tracked continuously at long-term stations such as Station ALOHA, Hawaii.', source:'NOAA Ocean Acidification Program — verified Aug 2026' },
+  { text:'NOAA Coral Reef Watch tracks heat-stress and bleaching risk for reefs worldwide from satellite sea-surface temperature, updated daily — a genuinely live source this dashboard doesn\u2019t yet fetch directly.', source:'NOAA Coral Reef Watch — see Take Action tab for the link' }
+];
+const forestLossFacts = [
+  { text:'IUCN\u2019s Red List currently classifies tens of thousands of species as threatened with extinction — the live, continuously-updated count is at iucnredlist.org.', source:'IUCN Red List (see Take Action tab for the link)' },
+  { text:'Global Forest Watch publishes near-real-time deforestation and fire alerts by country and region — a genuinely live source this dashboard doesn\u2019t yet fetch directly.', source:'Global Forest Watch (see Take Action tab for the link)' }
+];
+const redListFacts = [
+  { text:'IUCN\u2019s Red List (version 2026-1) has assessed more than 175,000 species; over 47,000 are classified as threatened with extinction — both numbers grow as more species get newly assessed for the first time, not only as status worsens.', source:'IUCN Red List — verified Aug 2026' },
+  { text:'Well-studied "keystone" species are tracked individually rather than folded into one global number — wild tiger and African elephant populations, for example, are estimated and published per-region by IUCN and WWF as surveys complete.', source:'IUCN / WWF — see Take Action tab for direct links' }
+];
+const satelliteFacts = [
+  { name:'Landsat 9', role:'Land imaging at 30m resolution on a 16-day repeat cycle — joint USGS/NASA mission.' },
+  { name:'Sentinel-1 / -2 / -3', role:'ESA Copernicus program — radar and optical imaging of land and ocean.' },
+  { name:'GOES-16, -18, -19', role:'NOAA geostationary weather satellites covering the Americas and Pacific.' },
+  { name:'Terra & Aqua (MODIS)', role:'NASA — daily global land, ocean, and atmosphere imaging since 1999/2002.' },
+  { name:'ICESat-2', role:'NASA laser altimeter measuring ice-sheet, sea-ice, and forest-canopy height.' }
+];
+const biomeRegions = [
+  { name:'Amazon Basin', latMin:-15, latMax:5, lonMin:-75, lonMax:-45 },
+  { name:'Congo Basin', latMin:-5, latMax:5, lonMin:10, lonMax:30 },
+  { name:'Boreal — N. America', latMin:50, latMax:70, lonMin:-160, lonMax:-60 },
+  { name:'Boreal — Siberia', latMin:50, latMax:70, lonMin:60, lonMax:150 },
+  { name:'Southeast Asia', latMin:-10, latMax:20, lonMin:95, lonMax:140 },
+  { name:'Australia', latMin:-40, latMax:-10, lonMin:112, lonMax:154 }
+];
+function bucketEventsToBiomes(events){
+  return biomeRegions.map(r=>{
+    const matches = (events||[]).filter(e=> e.lat>=r.latMin && e.lat<=r.latMax && e.lon>=r.lonMin && e.lon<=r.lonMax);
+    const categories = {};
+    matches.forEach(e=> (e.categories||[]).forEach(c=>{ categories[c]=(categories[c]||0)+1; }));
+    return { name:r.name, count:matches.length, categories };
+  });
+}
+const actionOrgs = [
+  { name:'UNHCR — UN Refugee Agency', desc:'Supports and advocates for people forcibly displaced by conflict, violence, and disaster worldwide.', url:'https://www.unhcr.org/' },
+  { name:'ICRC — International Red Cross', desc:'Humanitarian protection and assistance in armed conflict and other situations of violence.', url:'https://www.icrc.org/' },
+  { name:'ReliefWeb (UN OCHA)', desc:'The real source behind the Humanitarian Response section\u2019s report list — browse full reports on every current crisis.', url:'https://reliefweb.int/' },
+  { name:'GDACS', desc:'The real source behind the Humanitarian Response section\u2019s alert levels — global multi-hazard disaster alerts.', url:'https://www.gdacs.org/' },
+  { name:'Global Forest Watch', desc:'Near-real-time forest loss and fire alerts, explorable by country and region.', url:'https://www.globalforestwatch.org/' },
+  { name:'IUCN Red List', desc:'The authoritative, continuously-updated global list of species conservation status.', url:'https://www.iucnredlist.org/' },
+  { name:'WWF', desc:'Conservation work across ecosystems, species, climate, and communities worldwide.', url:'https://www.worldwildlife.org/' },
+  { name:'NOAA Climate.gov', desc:'Plain-language climate science, current data, and educational resources.', url:'https://www.climate.gov/' },
+  { name:'NOAA Coral Reef Watch', desc:'Live satellite-based coral bleaching-risk monitoring worldwide.', url:'https://coralreefwatch.noaa.gov/' },
+  { name:'NASA Ozone Watch', desc:'Live tracking of the Antarctic ozone hole each spring.', url:'https://ozonewatch.gsfc.nasa.gov/' }
+];
+function renderActionPanel(){
+  const el = document.getElementById('panel-action');
+  const cards = actionOrgs.map(o => `
+    <div class="action-card">
+      <h3>${escapeHTML(o.name)}</h3>
+      <p>${escapeHTML(o.desc)}</p>
+      <a href="${o.url}" target="_blank" rel="noopener noreferrer">Visit ${escapeHTML(o.url.replace('https://','').replace(/\/$/,''))} →</a>
+    </div>`).join('');
+  el.innerHTML = `
+    <h2>Take Action</h2>
+    <p class="intro">Real, verified organizations doing this work. This dashboard doesn't process donations, collect any data, or send anything anywhere — these are direct links out to each organization's own site.</p>
+    <div class="action-grid">${cards}</div>
+    <details class="sources-details">
+      <summary>Attributions &amp; Licensing</summary>
+      <div class="attrib-content">
+        <h4>Live data sources</h4>
+        <ul>
+          <li>USGS Earthquake Hazards Program &amp; EMSC/SeismicPortal — seismic activity</li>
+          <li>NASA EONET — open natural-hazard events</li>
+          <li>NOAA Space Weather Prediction Center — space weather</li>
+          <li>Open-Meteo — reference weather conditions</li>
+          <li>ClimateObservatory.org — republishes NOAA GML, NASA GISTEMP, and Global Carbon Project data for CO₂, temperature, and emissions</li>
+          <li>GDACS — real-time disaster alert levels</li>
+          <li>ReliefWeb, run by UN OCHA — humanitarian situation-report metadata</li>
+        </ul>
+        <h4>Reference sources cited</h4>
+        <ul>
+          <li>NASA / NSIDC — sea ice, sea level, ice-sheet mass</li>
+          <li>NOAA Ocean Acidification Program &amp; NOAA Coral Reef Watch — ocean chemistry and coral stress</li>
+          <li>NASA Ozone Watch — ozone layer recovery</li>
+          <li>IUCN Red List &amp; Global Forest Watch — species status and forest loss</li>
+          <li>IPCC — well-established ocean heat-uptake figures</li>
+        </ul>
+        <p>This dashboard is original code. No third-party source code was copied; the design is conceptually indebted to common card/dashboard UI conventions, which are generic, unowned patterns.</p>
+      </div>
+    </details>`;
+}
+
+/* ============================================================================
+   SECTION 3 — LIVE DATA: SOURCES, CACHE & LOADERS (unchanged from before —
+   presentation changed, the data layer didn't)
+   ============================================================================ */
+let dbPromise = null;
+function openDB(){
+  if (!window.indexedDB) return Promise.reject(new Error('no indexedDB'));
+  if (dbPromise) return dbPromise;
+  dbPromise = new Promise((resolve,reject)=>{
+    try{
+      const req = indexedDB.open('civic_dashboard_cache_v2', 1);
+      req.onupgradeneeded = () => { try{ req.result.createObjectStore('liveData',{keyPath:'layer'}); }catch(e){} };
+      req.onsuccess = () => resolve(req.result);
+      req.onerror = () => reject(req.error);
+    }catch(e){ reject(e); }
+  });
+  return dbPromise;
+}
+async function cacheGet(layer){
+  try{
+    const db = await openDB();
+    return await new Promise(resolve=>{
+      try{
+        const tx = db.transaction('liveData','readonly');
+        const req = tx.objectStore('liveData').get(layer);
+        req.onsuccess = () => resolve(req.result || null);
+        req.onerror = () => resolve(null);
+      }catch(e){ resolve(null); }
+    });
+  }catch(e){ return null; }
+}
+async function cacheSet(layer, record){
+  try{
+    const db = await openDB();
+    await new Promise(resolve=>{
+      try{
+        const tx = db.transaction('liveData','readwrite');
+        tx.objectStore('liveData').put({layer, ...record});
+        tx.oncomplete = resolve; tx.onerror = () => resolve();
+      }catch(e){ resolve(); }
+    });
+  }catch(e){ /* caching just unavailable — non-fatal */ }
+}
+async function fetchJSON(url, timeoutMs){
+  const controller = new AbortController();
+  const timer = setTimeout(()=>controller.abort(), timeoutMs || 8000);
+  try{
+    const res = await fetch(url, { signal: controller.signal });
+    clearTimeout(timer);
+    if (!res.ok) throw new Error('HTTP '+res.status);
+    return await res.json();
+  }catch(err){ clearTimeout(timer); throw err; }
+}
+
+let layerStatus = {
+  planetary:    { tier:'loading', source:null, lastUpdated:null, data:null },
+  earthquakes:  { tier:'loading', source:null, lastUpdated:null, data:null },
+  naturalEvents:{ tier:'loading', source:null, lastUpdated:null, data:null },
+  spaceWeather: { tier:'loading', source:null, lastUpdated:null, data:null },
+  refWeather:   { tier:'loading', source:null, lastUpdated:null, data:null },
+  humanitarian: { tier:'loading', source:null, lastUpdated:null, data:null },
+  gdacs:        { tier:'loading', source:null, lastUpdated:null, data:null },
+  astronomy:    { tier:'calculated', source:'Computed', lastUpdated:null, data:null }
+};
+const LIVE_CAPABLE_LAYERS = ['planetary','earthquakes','naturalEvents','spaceWeather','refWeather','humanitarian','gdacs'];
+
+async function loadPlanetaryIndicators(){
+  layerStatus.planetary = { ...layerStatus.planetary, tier:'loading' };
+  const results = await Promise.allSettled([
+    fetchJSON('https://www.climateobservatory.org/api/co2/current', 8000),
+    fetchJSON('https://www.climateobservatory.org/api/temperature/current', 8000),
+    fetchJSON('https://www.climateobservatory.org/api/emissions/global', 8000)
+  ]);
+  const data = {
+    co2: results[0].status==='fulfilled' ? results[0].value : null,
+    temp: results[1].status==='fulfilled' ? results[1].value : null,
+    emissions: results[2].status==='fulfilled' ? results[2].value : null
+  };
+  if (data.co2 || data.temp || data.emissions){
+    layerStatus.planetary = { tier:'live', source:'ClimateObservatory.org (NOAA/NASA/GCP data)', lastUpdated:Date.now(), data };
+    cacheSet('planetary', { data, source:'ClimateObservatory.org', fetchedAt:Date.now() });
+  } else {
+    const cached = await cacheGet('planetary');
+    if (cached) layerStatus.planetary = { tier:'cached', source:(cached.source||'cache')+' (cached)', lastUpdated:cached.fetchedAt, data:cached.data };
+    else layerStatus.planetary = { tier:'unavailable', source:'ClimateObservatory.org unreachable', lastUpdated:Date.now(), data:null };
+  }
+}
+function parseQuakeFeatures(feats, fieldMap){
+  const points = feats.map(f=>{
+    const p = f.properties || {}; const coords = (f.geometry && f.geometry.coordinates) || [];
+    return { mag: Number(fieldMap.mag(p)), lat: Number(fieldMap.lat(p, coords)), lon: Number(fieldMap.lon(p, coords)),
+      place: fieldMap.place(p) || 'Unknown region', time: fieldMap.time(p) || null };
+  }).filter(pt => isFinite(pt.mag) && isFinite(pt.lat) && isFinite(pt.lon));
+  if (!points.length) throw new Error('no usable features');
+  points.sort((a,b)=>b.mag-a.mag);
+  return { count24h: points.length, maxMag: points[0].mag, maxPlace: points[0].place, points: points.slice(0,40) };
+}
+function parseUSGS(geojson){ return parseQuakeFeatures(geojson.features || [], { mag:p=>p.mag, lat:(p,c)=>c[1], lon:(p,c)=>c[0], place:p=>p.place, time:p=>p.time }); }
+function parseEMSC(geojson){
+  return parseQuakeFeatures(geojson.features || [], {
+    mag:p=>p.mag ?? p.magnitude, lat:(p,c)=>p.lat ?? c[1], lon:(p,c)=>p.lon ?? c[0],
+    place:p=>p.flynn_region || p.place || p.region, time:p=>p.time || p.lastupdate
+  });
+}
+async function loadEarthquakes(){
+  layerStatus.earthquakes = { ...layerStatus.earthquakes, tier:'loading' };
+  try{
+    const json = await fetchJSON('https://earthquake.usgs.gov/earthquakes/feed/v1.0/summary/all_day.geojson', 8000);
+    const data = parseUSGS(json);
+    layerStatus.earthquakes = { tier:'live', source:'USGS', lastUpdated:Date.now(), data };
+    cacheSet('earthquakes', { data, source:'USGS', fetchedAt:Date.now() });
+    return;
+  }catch(e1){
+    try{
+      const json = await fetchJSON('https://www.emsc-csem.org/service/api/1.6/get.geojson?type=full', 8000);
+      const data = parseEMSC(json);
+      layerStatus.earthquakes = { tier:'live', source:'EMSC/SeismicPortal', lastUpdated:Date.now(), data };
+      cacheSet('earthquakes', { data, source:'EMSC/SeismicPortal', fetchedAt:Date.now() });
+      return;
+    }catch(e2){
+      const cached = await cacheGet('earthquakes');
+      if (cached) layerStatus.earthquakes = { tier:'cached', source:(cached.source||'cache')+' (cached)', lastUpdated:cached.fetchedAt, data:cached.data };
+      else layerStatus.earthquakes = { tier:'unavailable', source:'USGS + EMSC unreachable', lastUpdated:Date.now(), data:null };
+    }
+  }
+}
+function parseEONET(json){
+  const events = json.events || []; const counts = {}; const light = [];
+  events.forEach(e=>{
+    const cats = (e.categories||[]).map(c=>c.title);
+    cats.forEach(t=>{ counts[t]=(counts[t]||0)+1; });
+    const geo = (e.geometry && e.geometry[e.geometry.length-1]) || null;
+    if (geo && geo.coordinates && geo.coordinates.length>=2) light.push({ title:e.title, categories:cats, lon:geo.coordinates[0], lat:geo.coordinates[1] });
+  });
+  return { total: events.length, counts, events: light };
+}
+async function loadNaturalEvents(){
+  layerStatus.naturalEvents = { ...layerStatus.naturalEvents, tier:'loading' };
+  try{
+    const json = await fetchJSON('https://eonet.gsfc.nasa.gov/api/v3/events?status=open&limit=150', 8000);
+    const data = parseEONET(json);
+    layerStatus.naturalEvents = { tier:'live', source:'NASA EONET', lastUpdated:Date.now(), data };
+    cacheSet('naturalEvents', { data, source:'NASA EONET', fetchedAt:Date.now() });
+  }catch(e){
+    const cached = await cacheGet('naturalEvents');
+    if (cached) layerStatus.naturalEvents = { tier:'cached', source:(cached.source||'cache')+' (cached)', lastUpdated:cached.fetchedAt, data:cached.data };
+    else layerStatus.naturalEvents = { tier:'unavailable', source:'NASA EONET unreachable', lastUpdated:Date.now(), data:null };
+  }
+}
+function parseKp(raw){
+  if (!Array.isArray(raw) || raw.length < 2) throw new Error('unexpected Kp format');
+  const header = raw[0]; const kpIdx = header.findIndex(h=>/kp/i.test(String(h)));
+  if (kpIdx === -1) throw new Error('Kp column not found');
+  const kp = parseFloat(raw[raw.length-1][kpIdx]);
+  if (!isFinite(kp)) throw new Error('Kp not numeric');
+  return kp;
+}
+function classifyKp(kp){
+  if (kp < 3) return {label:'Quiet', color:'#10b981'};
+  if (kp < 4) return {label:'Unsettled', color:'#84cc16'};
+  if (kp < 5) return {label:'Active', color:'#fbbf24'};
+  if (kp < 6) return {label:'Minor Storm (G1)', color:'#f59e0b'};
+  if (kp < 7) return {label:'Moderate Storm (G2)', color:'#f97316'};
+  if (kp < 8) return {label:'Strong Storm (G3)', color:'#ef4444'};
+  if (kp < 9) return {label:'Severe Storm (G4)', color:'#dc2626'};
+  return {label:'Extreme Storm (G5)', color:'#b91c1c'};
+}
+async function loadSpaceWeather(){
+  layerStatus.spaceWeather = { ...layerStatus.spaceWeather, tier:'loading' };
+  try{
+    const raw = await fetchJSON('https://services.swpc.noaa.gov/products/noaa-planetary-k-index.json', 8000);
+    const kp = parseKp(raw);
+    let windSpeed = null;
+    try{
+      const plasma = await fetchJSON('https://services.swpc.noaa.gov/products/solar-wind/plasma-1-day.json', 8000);
+      if (Array.isArray(plasma) && plasma.length > 1){
+        const h = plasma[0]; const spIdx = h.findIndex(x=>/speed/i.test(String(x)));
+        if (spIdx > -1){ const v = parseFloat(plasma[plasma.length-1][spIdx]); if (isFinite(v)) windSpeed = v; }
+      }
+    }catch(eOptional){ /* bonus metric only */ }
+    const data = { kp, windSpeed };
+    layerStatus.spaceWeather = { tier:'live', source:'NOAA SWPC', lastUpdated:Date.now(), data };
+    cacheSet('spaceWeather', { data, source:'NOAA SWPC', fetchedAt:Date.now() });
+  }catch(e){
+    const cached = await cacheGet('spaceWeather');
+    if (cached) layerStatus.spaceWeather = { tier:'cached', source:(cached.source||'cache')+' (cached)', lastUpdated:cached.fetchedAt, data:cached.data };
+    else layerStatus.spaceWeather = { tier:'unavailable', source:'NOAA SWPC unreachable', lastUpdated:Date.now(), data:null };
+  }
+}
+const refPoints = [
+  { name:'Reykjavík (polar ref.)', lat:64.13, lon:-21.9 },
+  { name:'Singapore (equatorial ref.)', lat:1.35, lon:103.8 },
+  { name:'Cairo (arid ref.)', lat:30.04, lon:31.24 }
+];
+async function loadRefWeather(){
+  layerStatus.refWeather = { ...layerStatus.refWeather, tier:'loading' };
+  const results = []; let anyLive = false;
+  for (const pt of refPoints){
+    try{
+      const url = 'https://api.open-meteo.com/v1/forecast?latitude='+pt.lat+'&longitude='+pt.lon+'&current=temperature_2m,weather_code';
+      const json = await fetchJSON(url, 8000);
+      results.push({ name:pt.name, temp: json.current.temperature_2m });
+      anyLive = true;
+    }catch(e){ results.push({ name:pt.name, temp:null }); }
+  }
+  if (anyLive){
+    layerStatus.refWeather = { tier:'live', source:'Open-Meteo', lastUpdated:Date.now(), data:{points:results} };
+    cacheSet('refWeather', { data:{points:results}, source:'Open-Meteo', fetchedAt:Date.now() });
+  } else {
+    const cached = await cacheGet('refWeather');
+    if (cached) layerStatus.refWeather = { tier:'cached', source:(cached.source||'cache')+' (cached)', lastUpdated:cached.fetchedAt, data:cached.data };
+    else layerStatus.refWeather = { tier:'unavailable', source:'Open-Meteo unreachable', lastUpdated:Date.now(), data:{points:refPoints.map(p=>({name:p.name,temp:null}))} };
+  }
+}
+function parseReliefWeb(json){
+  const items = json.data || [];
+  const disasters = items.map(item=>{
+    const f = item.fields || {}; const name = f.name;
+    if (!name) return null;
+    return { name, countries:(f.country||[]).map(c=>c.name).join(', '), types:(f.type||[]).map(t=>t.name).join(', '), status:f.status || '' };
+  }).filter(Boolean);
+  if (!disasters.length) throw new Error('no usable disaster records');
+  return { total: disasters.length, disasters: disasters.slice(0,10) };
+}
+async function loadHumanitarian(){
+  layerStatus.humanitarian = { ...layerStatus.humanitarian, tier:'loading' };
+  try{
+    const url = 'https://api.reliefweb.int/v2/disasters?appname=civic-benevolence-dashboard&limit=15&sort[]=date:desc';
+    const json = await fetchJSON(url, 9000);
+    const data = parseReliefWeb(json);
+    layerStatus.humanitarian = { tier:'live', source:'ReliefWeb (UN OCHA)', lastUpdated:Date.now(), data };
+    cacheSet('humanitarian', { data, source:'ReliefWeb (UN OCHA)', fetchedAt:Date.now() });
+  }catch(e){
+    const cached = await cacheGet('humanitarian');
+    if (cached) layerStatus.humanitarian = { tier:'cached', source:(cached.source||'cache')+' (cached)', lastUpdated:cached.fetchedAt, data:cached.data };
+    else layerStatus.humanitarian = { tier:'unavailable', source:'ReliefWeb unreachable', lastUpdated:Date.now(), data:null };
+  }
+}
+function parseGDACS(json){
+  const feats = json.features || [];
+  const order = {red:0, orange:1, green:2};
+  const events = feats.map(f=>{
+    const p = f.properties || {};
+    const type = p.eventtype || p.eventType || 'Event';
+    const rawName = p.eventname || p.name || p.htmldescription || (type+' event');
+    const name = String(rawName).replace(/<[^>]+>/g,'').trim().slice(0,120);
+    const country = p.country || p.iso3 || '';
+    const alertLevel = String(p.alertlevel || p.alertLevel || 'Green');
+    return { type, name, country, alertLevel };
+  }).filter(e => e.name);
+  if (!events.length) throw new Error('no usable GDACS events');
+  events.sort((a,b)=> (order[a.alertLevel.toLowerCase()] ?? 3) - (order[b.alertLevel.toLowerCase()] ?? 3));
+  return { total: events.length, events: events.slice(0,20) };
+}
+async function loadGDACS(){
+  layerStatus.gdacs = { ...layerStatus.gdacs, tier:'loading' };
+  try{
+    const json = await fetchJSON('https://www.gdacs.org/gdacsapi/api/events/geteventlist/EVENTS4APP', 9000);
+    const data = parseGDACS(json);
+    layerStatus.gdacs = { tier:'live', source:'GDACS', lastUpdated:Date.now(), data };
+    cacheSet('gdacs', { data, source:'GDACS', fetchedAt:Date.now() });
+  }catch(e){
+    const cached = await cacheGet('gdacs');
+    if (cached) layerStatus.gdacs = { tier:'cached', source:(cached.source||'cache')+' (cached)', lastUpdated:cached.fetchedAt, data:cached.data };
+    else layerStatus.gdacs = { tier:'unavailable', source:'GDACS unreachable', lastUpdated:Date.now(), data:null };
+  }
+}
+function getMoonPhase(date){
+  const synodicMonth = 29.530588853; const knownNewMoon = Date.UTC(2000,0,6,18,14,0);
+  let phase = ((date.getTime()-knownNewMoon)/86400000) % synodicMonth;
+  if (phase < 0) phase += synodicMonth;
+  const frac = phase/synodicMonth;
+  const illumination = Math.round(((1-Math.cos(2*Math.PI*frac))/2)*100);
+  let name;
+  if (frac<0.03||frac>0.97) name='New Moon'; else if (frac<0.22) name='Waxing Crescent';
+  else if (frac<0.28) name='First Quarter'; else if (frac<0.47) name='Waxing Gibbous';
+  else if (frac<0.53) name='Full Moon'; else if (frac<0.72) name='Waning Gibbous';
+  else if (frac<0.78) name='Last Quarter'; else name='Waning Crescent';
+  return { name, illumination };
+}
+const seasonalMarkers = [
+  { name:'March Equinox', date: Date.UTC(2026,2,20,14,46) }, { name:'June Solstice', date: Date.UTC(2026,5,21,8,25) },
+  { name:'September Equinox', date: Date.UTC(2026,8,23,0,6) }, { name:'December Solstice', date: Date.UTC(2026,11,21,20,50) },
+  { name:'March Equinox', date: Date.UTC(2027,2,20,20,25) }, { name:'June Solstice', date: Date.UTC(2027,5,21,14,11) },
+  { name:'September Equinox', date: Date.UTC(2027,8,23,6,2) }, { name:'December Solstice', date: Date.UTC(2027,11,22,2,43) }
+];
+function nextSeasonalMarker(now){ const t = now.getTime(); for (const m of seasonalMarkers){ if (m.date > t) return m; } return null; }
+let astronomyData = null;
+function computeAstronomy(){
+  try{
+    const now = new Date(); const moon = getMoonPhase(now); const next = nextSeasonalMarker(now);
+    const daysUntil = next ? Math.max(0,(next.date-now.getTime())/86400000) : null;
+    astronomyData = { moon, nextName: next ? next.name : null, daysUntil };
+    layerStatus.astronomy = { tier:'calculated', source:'Lunar-cycle formula + published ephemeris', lastUpdated:Date.now(), data:astronomyData };
+  }catch(e){ /* keep last good astronomyData rather than crash */ }
+}
+
+let lastRefresh = 0;
+let refreshInFlight = false;
+function startButtonCooldown(seconds){
+  const btn = document.getElementById('refreshLiveBtn'); if (!btn) return;
+  let remaining = seconds;
+  const tick = () => {
+    if (remaining <= 0){ btn.disabled=false; btn.textContent='🔄 Refresh Live Data'; return; }
+    btn.textContent = '🔄 Wait '+remaining+'s'; remaining--; setTimeout(tick, 1000);
+  };
+  btn.disabled = true; tick();
+}
+function computeDataHealth(){
+  const liveCount = LIVE_CAPABLE_LAYERS.filter(k => layerStatus[k].tier === 'live').length;
+  return { liveCount, total: LIVE_CAPABLE_LAYERS.length };
+}
+function renderDataHealth(){
+  const el = document.getElementById('dataHealth'); if (!el) return;
+  const h = computeDataHealth();
+  el.textContent = h.liveCount+' of '+h.total+' live sources reachable';
+  el.classList.toggle('health-warn', h.liveCount===0);
+  const banner = document.getElementById('offlineBanner');
+  if (banner) banner.hidden = h.liveCount > 0;
+}
+async function refreshAllLiveLayers(manual){
+  if (refreshInFlight) return; refreshInFlight = true;
+  await Promise.all([ loadPlanetaryIndicators(), loadEarthquakes(), loadNaturalEvents(), loadSpaceWeather(), loadRefWeather(), loadHumanitarian(), loadGDACS() ]);
+  computeAstronomy(); lastRefresh = Date.now(); refreshInFlight = false;
+  renderAllViews();
+  renderDataHealth();
+  if (manual) startButtonCooldown(20);
+}
+
+/* ============================================================================
+   SECTION 4 — RENDERING: one function per section
+   ============================================================================ */
+function renderOverview(){
+  const el = document.getElementById('panel-overview');
+  const status = layerStatus.planetary;
+  const co2Card = cardHTML('💨 Atmospheric CO₂ (Mauna Loa)', status, (data)=> !data.co2 ?
+    [{label:'Status', value:'Not returned by source this time'}] :
+    [{label:'Current level', value: data.co2.value.toFixed(2)+' '+data.co2.unit}, {label:'As of', value: data.co2.date}]);
+  const tempCard = cardHTML('🌡️ Global Land Temperature Anomaly', status, (data)=> !data.temp ?
+    [{label:'Status', value:'Not returned by source this time'}] :
+    [{label:'Anomaly', value: '+'+data.temp.value.toFixed(2)+'°C'}, {label:'Baseline', value:'vs. 1901–1930, land only'}]);
+  const emCard = cardHTML('🏭 Global CO₂ Emissions (latest annual)', status, (data)=> !data.emissions ?
+    [{label:'Status', value:'Not returned by source this time'}] :
+    [{label:'Total', value: Math.round(data.emissions.value).toLocaleString()+' Mt CO₂'}]);
+  el.innerHTML = `
+    <h2>Planetary Overview</h2>
+    <p class="intro">Live headline figures. Greenhouse-gas detail, oceans, biodiversity, and more are under Environment in the sidebar.</p>
+    <div class="card-grid">${co2Card}${tempCard}${emCard}</div>
+    <p class="fine-print">Note: the temperature figure is land-only, using an earlier reference period than the commonly-cited global land+ocean anomaly (roughly +1.2–1.5°C vs. 1850–1900) — both are correctly computed, just different baselines.</p>
+    <details class="sources-details" open>
+      <summary>How this dashboard works</summary>
+      <div class="howto-content">
+        <p>Every figure here is labeled with how it was obtained — <strong>Live</strong> (fetched just now), <strong>Cached</strong> (the last successful fetch, saved in your browser), <strong>Calculated</strong> (real math, like the moon phase), <strong>Reference</strong> (verified by hand because no simple live feed exists for it), or <strong>Unavailable</strong> (nothing to show, said plainly rather than guessed). The same legend is always in the sidebar.</p>
+        <p>Quick ways in:</p>
+        <ul>
+          <li>Checking what's happening right now → Live Earth Monitor and Humanitarian Response.</li>
+          <li>Researching longer-term trends → the Environment group (Climate &amp; Atmosphere, Oceans, Biodiversity, Satellites).</li>
+          <li>Looking for somewhere to help → Take Action.</li>
+          <li>Finding a specific fact fast → Search (Ctrl/Cmd+K), searchable from anywhere.</li>
+        </ul>
+      </div>
+    </details>`;
+}
+function renderLive(){
+  const el = document.getElementById('panel-live');
+  const eqCard = cardHTML('🌎 Seismic Activity (24h, worldwide)', layerStatus.earthquakes, (data)=>[
+    {label:'Events tracked', value:String(data.count24h)}, {label:'Largest', value:'M'+data.maxMag.toFixed(1)+' — '+data.maxPlace}
+  ]);
+  const hazardCard = cardHTML('🔥 Active Natural Hazard Events', layerStatus.naturalEvents, (data)=>{
+    const top = Object.entries(data.counts).sort((a,b)=>b[1]-a[1]).slice(0,2);
+    return [{label:'Total open events', value:String(data.total)}, ...top.map(([k,v])=>({label:k, value:String(v)}))];
+  });
+  const swCard = cardHTML('☀️ Space Weather', layerStatus.spaceWeather, (data)=>{
+    const cls = classifyKp(data.kp);
+    const rows = [{label:'Planetary Kp index', value:data.kp.toFixed(2)+' — '+cls.label, color:cls.color}];
+    if (data.windSpeed) rows.push({label:'Solar wind speed', value:Math.round(data.windSpeed)+' km/s'});
+    return rows;
+  });
+  const rw = layerStatus.refWeather;
+  const rwPoints = (rw.data && rw.data.points) || [];
+  const refCard = `<div class="card">
+    <div class="card-header"><h3>🌡️ Reference Conditions (3 fixed stations)</h3>${badgeHTML(rw.tier)}</div>
+    <div class="card-body">${rwPoints.length ? rwPoints.map(p=>`<div class="row"><span class="label">${escapeHTML(p.name)}</span><span class="value">${p.temp!=null?p.temp.toFixed(1)+'°C':'—'}</span></div>`).join('') : '<p class="muted">No live or cached data right now.</p>'}</div>
+    <div class="card-footer">${escapeHTML(rw.source||'—')} · updated ${ageString(rw.lastUpdated)}</div>
+  </div>`;
+  const astroCard = astronomyData ? `<div class="card">
+    <div class="card-header"><h3>🌙 Astronomy (calculated, always current)</h3>${badgeHTML('calculated')}</div>
+    <div class="card-body">
+      <div class="row"><span class="label">Moon phase</span><span class="value">${escapeHTML(astronomyData.moon.name)} (${astronomyData.moon.illumination}% lit)</span></div>
+      <div class="row"><span class="label">Next seasonal marker</span><span class="value">${astronomyData.daysUntil!=null ? Math.floor(astronomyData.daysUntil)+'d — '+escapeHTML(astronomyData.nextName) : '—'}</span></div>
+    </div>
+    <div class="card-footer">Lunar-cycle formula + published 2026–2027 ephemeris · no network call</div>
+  </div>` : '';
+  const eqRows = (layerStatus.earthquakes.data ? layerStatus.earthquakes.data.points : []).slice(0,15)
+    .map(p => `<tr><td>M${p.mag.toFixed(1)}</td><td>${escapeHTML(p.place)}</td><td>${p.time ? escapeHTML(new Date(p.time).toLocaleString()) : '—'}</td></tr>`).join('');
+  const eqTable = layerStatus.earthquakes.data ? `
+    <h3 class="section-sub">Recent seismic events</h3>
+    <div class="table-wrap"><table class="data-table"><thead><tr><th>Magnitude</th><th>Location</th><th>Time</th></tr></thead>
+    <tbody>${eqRows}</tbody></table></div>` : '';
+  const sourcesRows = [
+    ['Planetary Indicators', layerStatus.planetary, 'https://www.climateobservatory.org/'],
+    ['Seismic Activity', layerStatus.earthquakes, 'https://earthquake.usgs.gov/'],
+    ['Natural Hazard Events', layerStatus.naturalEvents, 'https://eonet.gsfc.nasa.gov/'],
+    ['Space Weather', layerStatus.spaceWeather, 'https://www.swpc.noaa.gov/'],
+    ['Reference Conditions', layerStatus.refWeather, 'https://open-meteo.com/'],
+    ['Disaster Alerts (GDACS)', layerStatus.gdacs, 'https://www.gdacs.org/'],
+    ['Humanitarian Reports', layerStatus.humanitarian, 'https://reliefweb.int/'],
+    ['Astronomy', layerStatus.astronomy, null]
+  ].map(([name,status,href])=>{
+    const link = href ? `<a href="${href}" target="_blank" rel="noopener noreferrer">${href.replace('https://','')}</a>` : 'Computed locally, no network call';
+    return `<li><div class="list-item-title">${name}</div>${badgeHTML(status.tier||'unavailable')}<div class="list-item-meta">${escapeHTML(status.source||'—')} · updated ${ageString(status.lastUpdated)}</div><div class="src-link">${link}</div></li>`;
+  }).join('');
+  el.innerHTML = `
+    <h2>Live Earth Monitor</h2>
+    <p class="intro">Real public APIs first, then cache, then "unavailable" — never a guessed number. Last full refresh: ${lastRefresh?ageString(lastRefresh):'not yet run'}.</p>
+    <div class="card-grid">${eqCard}${hazardCard}${swCard}${refCard}${astroCard}</div>
+    ${eqTable}
+    <details class="sources-details">
+      <summary>Sources &amp; Status</summary>
+      <p class="intro" style="margin-top:10px;">Each layer tries a real public API first, falls back to the last successful copy cached in this browser (IndexedDB), and otherwise says "unavailable" — never a guessed number. Read-only GET requests only.</p>
+      <ul class="card-list sources-list">${sourcesRows}</ul>
+    </details>`;
+}
+function renderClimateAtmosphere(){
+  document.getElementById('panel-climate').innerHTML = `
+    <h2>Climate &amp; Atmosphere</h2>
+    <p class="intro">CO₂ and temperature anomaly are live on Overview. These indicators change too slowly, or are assessed too carefully, for a simple live feed to responsibly summarize — shown here as dated, sourced reference figures instead.</p>
+    ${factsCardHTML('📚 Greenhouse Gases &amp; Ozone', greenhouseGasFacts)}
+    ${factsCardHTML('❄️ Cryosphere &amp; Sea Level', cryosphereFacts)}`;
+}
+function renderOceans(){
+  document.getElementById('panel-oceans').innerHTML = `
+    <h2>Oceans</h2>
+    <p class="intro">No simple, free, no-key live ocean API was confidently verified in the time available — NOAA buoy data is real but distributed as text files built for scripts, not browser fetches. Shown here as reference facts with direct links instead.</p>
+    ${factsCardHTML('📚 Heat, Acidification &amp; Coral', oceanFacts)}`;
+}
+function renderBiomeMap(){
+  const el = document.getElementById('panel-biomes');
+  const status = layerStatus.naturalEvents;
+  let regionsHTML;
+  if (status.data){
+    const buckets = bucketEventsToBiomes(status.data.events);
+    regionsHTML = buckets.map(b => {
+      const sev = b.count > 3 ? 'sev-high' : b.count > 0 ? 'sev-mid' : '';
+      const cats = Object.keys(b.categories).slice(0,3).map(escapeHTML).join(', ') || 'None currently detected';
+      return `<div class="card region-card ${sev}">
+        <h3>${escapeHTML(b.name)}</h3>
+        <div class="region-count">${b.count}</div>
+        <p class="fine-print">active hazard events (live)</p>
+        <p class="fact-text">${cats}</p>
+      </div>`;
+    }).join('');
+  } else {
+    regionsHTML = `<p class="muted">Live hazard data unavailable right now — see Live Earth Monitor.</p>`;
+  }
+  el.innerHTML = `
+    <h2>Biome &amp; Hazard Map</h2>
+    <p class="intro">Live NASA EONET hazard events (fire, storm, volcano, drought, and more) counted by major forest region — a real proxy signal, not a fabricated health score.</p>
+    <p class="status-line">${badgeHTML(status.tier)} NASA EONET · updated ${ageString(status.lastUpdated)}</p>
+    <div class="card-grid">${regionsHTML}</div>
+    ${factsCardHTML('📚 Species &amp; Forest-Loss Context', forestLossFacts)}`;
+}
+function renderBiodiversity(){
+  document.getElementById('panel-biodiversity').innerHTML = `
+    <h2>Biodiversity</h2>
+    <p class="intro">Live regional hazard signals are on Biome &amp; Hazard Map. Species-level conservation status is assessed by specialists over months or years — shown here as sourced reference facts.</p>
+    ${factsCardHTML('📚 Red List &amp; Population Status', redListFacts)}`;
+}
+function renderHumanitarian(){
+  const el = document.getElementById('panel-humanitarian');
+  const gStatus = layerStatus.gdacs;
+  let gdacsHTML;
+  if (gStatus.data && gStatus.data.events.length){
+    const highAlert = gStatus.data.events.filter(e=>/orange|red/i.test(e.alertLevel));
+    gdacsHTML = `<p class="status-line">${badgeHTML(gStatus.tier)} GDACS · updated ${ageString(gStatus.lastUpdated)} — ${highAlert.length} orange/red alerts of ${gStatus.data.total} tracked events (last 4 days)</p>`;
+    gdacsHTML += highAlert.length ? '<ul class="alert-list">' + highAlert.slice(0,6).map(e=>{
+      const cls = /red/i.test(e.alertLevel) ? 'alert-red' : 'alert-orange';
+      return `<li class="${cls}"><span class="alert-level">${escapeHTML(e.alertLevel.toUpperCase())}</span>${escapeHTML(e.type)} — ${escapeHTML(e.name)}${e.country?' ('+escapeHTML(e.country)+')':''}</li>`;
+    }).join('') + '</ul>' : '<p class="muted">No orange/red alerts currently active.</p>';
+  } else {
+    gdacsHTML = `<p class="status-line">${badgeHTML(gStatus.tier)} GDACS</p><p class="muted">No live or cached GDACS data right now.</p>`;
+  }
+  const status = layerStatus.humanitarian;
+  let rwHTML = `<p class="status-line">${badgeHTML(status.tier)} ${escapeHTML(status.source||'—')} · updated ${ageString(status.lastUpdated)}</p>`;
+  if (status.tier==='unavailable' || !status.data || !status.data.disasters || !status.data.disasters.length){
+    rwHTML += `<p class="muted">No live or cached ReliefWeb data right now — visit reliefweb.int directly (see Take Action).</p>`;
+  } else {
+    rwHTML += '<div class="card-list">' + status.data.disasters.map(d => `
+      <div class="list-item">
+        <div class="list-item-title">${escapeHTML(d.name)}</div>
+        <div class="list-item-meta">${escapeHTML([d.countries, d.types, d.status].filter(Boolean).join(' · '))}</div>
+      </div>`).join('') + '</div>';
+  }
+  el.innerHTML = `
+    <h2>Humanitarian &amp; Disaster Response</h2>
+    <p class="intro">Real-time alert levels from GDACS plus situation-report metadata from ReliefWeb (UN OCHA) — event names, types, countries, alert levels only. This dashboard never computes or displays casualty or displacement figures itself.</p>
+    <div class="facts-card">${gdacsHTML}</div>
+    <div class="facts-card">${rwHTML}</div>`;
+}
+function renderSatellites(){
+  const cards = satelliteFacts.map(s => `
+    <div class="card">
+      <div class="card-header"><h3>${escapeHTML(s.name)}</h3>${badgeHTML('reference')}</div>
+      <div class="card-body"><p class="fact-text">${escapeHTML(s.role)}</p></div>
+    </div>`).join('');
+  document.getElementById('panel-satellites').innerHTML = `
+    <h2>Satellites &amp; Earth Observation</h2>
+    <p class="intro">Real, currently-operating missions verified by research — their data is what actually powers Live Earth Monitor. No simple no-key live satellite-status API was confidently identified.</p>
+    <div class="card-grid">${cards}</div>`;
+}
+function renderAllViews(){
+  renderOverview(); renderLive(); renderClimateAtmosphere(); renderOceans();
+  renderBiomeMap(); renderBiodiversity(); renderHumanitarian(); renderSatellites();
+  searchIndex = buildSearchIndex();
+}
+
+/* ============================================================================
+   SECTION 5 — CLIENT-SIDE SEARCH (built from what's actually rendered)
+   ============================================================================ */
+let searchIndex = [];
+function buildSearchIndex(){
+  const idx = []; let counter = 0;
+  document.querySelectorAll('.view').forEach(section=>{
+    const view = section.dataset.view;
+    const label = TAB_LABELS[view] || view;
+    section.querySelectorAll('.card, .facts-card > ul > li, .region-card, .alert-list li, .list-item, .action-card, table.data-table tbody tr').forEach(elm=>{
+      const text = elm.textContent.replace(/\s+/g,' ').trim();
+      if (text.length < 8) return;
+      const id = 'search-item-'+(counter++);
+      elm.setAttribute('data-search-id', id);
+      idx.push({ id, tab:view, tabLabel:label, text: text.length>220 ? text.slice(0,220)+'…' : text });
+    });
+  });
+  return idx;
+}
+function runSearch(query){
+  const q = query.trim().toLowerCase();
+  if (!q) return [];
+  return searchIndex.filter(item => item.text.toLowerCase().includes(q) || item.tabLabel.toLowerCase().includes(q)).slice(0,20);
+}
+function renderSearchResults(query){
+  const results = runSearch(query);
+  const el = document.getElementById('searchResults');
+  if (!el) return;
+  if (!query.trim()){ el.innerHTML = '<p class="search-empty">Start typing to search facts, figures, and organizations across every section.</p>'; return; }
+  if (!results.length){ el.innerHTML = '<p class="search-empty">No matches. Try a different word.</p>'; return; }
+  el.innerHTML = results.map((r,i)=> `<button class="search-result" type="button" data-idx="${i}"><div class="tag">${escapeHTML(r.tabLabel)}</div><div class="txt">${escapeHTML(r.text)}</div></button>`).join('');
+  el.querySelectorAll('.search-result').forEach((btn,i)=> btn.addEventListener('click', ()=> goToSearchResult(results[i])));
+}
+function goToSearchResult(item){
+  closeSearch();
+  switchView(item.tab);
+  requestAnimationFrame(()=>{
+    const target = document.querySelector('[data-search-id="'+item.id+'"]');
+    if (target){
+      target.scrollIntoView({behavior:'smooth', block:'center'});
+      target.classList.add('search-highlight');
+      setTimeout(()=> target.classList.remove('search-highlight'), 2000);
+    }
+  });
+}
+function openSearch(){
+  const panel = document.getElementById('searchPanel'); if (!panel) return;
+  panel.hidden = false;
+  const input = document.getElementById('searchInput');
+  input.value = ''; renderSearchResults(''); input.focus();
+}
+function closeSearch(){ const panel = document.getElementById('searchPanel'); if (panel) panel.hidden = true; }
+
+/* ============================================================================
+   SECTION 6 — NAVIGATION, MOBILE DRAWER, KEYBOARD, CHROME
+   ============================================================================ */
+const VALID_VIEWS = ['overview','live','climate','oceans','biomes','biodiversity','humanitarian','satellites','action'];
+const TAB_LABELS = {
+  overview:'Overview', live:'Live Earth Monitor', climate:'Climate & Atmosphere', oceans:'Oceans',
+  biomes:'Biome & Hazard Map', biodiversity:'Biodiversity', humanitarian:'Humanitarian Response',
+  satellites:'Satellites', action:'Take Action'
+};
+let currentView = 'overview';
+let uiPrefsState = { lastView:'overview' };
+function saveUIPrefs(){ cacheSet('uiPrefs', { data: uiPrefsState, source:'local', fetchedAt:Date.now() }); }
+
+function closeMobileSidebar(){
+  document.getElementById('sidebar').classList.remove('open');
+  document.getElementById('sidebarOverlay').classList.remove('visible');
+  document.getElementById('mobileMenuBtn').setAttribute('aria-expanded','false');
+}
+function openMobileSidebar(){
+  document.getElementById('sidebar').classList.add('open');
+  document.getElementById('sidebarOverlay').classList.add('visible');
+  document.getElementById('mobileMenuBtn').setAttribute('aria-expanded','true');
+}
+document.getElementById('mobileMenuBtn').addEventListener('click', ()=>{
+  document.getElementById('sidebar').classList.contains('open') ? closeMobileSidebar() : openMobileSidebar();
+});
+document.getElementById('sidebarOverlay').addEventListener('click', closeMobileSidebar);
+
+function switchView(view){
+  currentView = view;
+  document.querySelectorAll('.nav-item').forEach(b=>{
+    const active = b.dataset.view===view;
+    b.classList.toggle('active', active); b.setAttribute('aria-selected', active ? 'true':'false');
+  });
+  document.querySelectorAll('.view').forEach(section=> section.classList.toggle('active', section.dataset.view===view));
+  const mainEl = document.getElementById('mainContent');
+  if (mainEl) mainEl.scrollTop = 0; // bug fix: without this, switching from a tall section to a short one could leave the view scrolled past all visible content
+  uiPrefsState.lastView = view;
+  saveUIPrefs();
+  closeMobileSidebar();
+}
+document.querySelectorAll('.nav-item').forEach(btn=> btn.addEventListener('click', ()=> switchView(btn.dataset.view)));
+document.getElementById('refreshLiveBtn').addEventListener('click', ()=> refreshAllLiveLayers(true));
+document.getElementById('retryBannerBtn').addEventListener('click', ()=> refreshAllLiveLayers(true));
+
+// Standard ARIA-tabs keyboard pattern: arrow keys move focus and activate
+// the adjacent tab; Home/End jump to the first/last.
+document.querySelector('[role="tablist"]').addEventListener('keydown', e=>{
+  const items = Array.from(document.querySelectorAll('.nav-item'));
+  const i = items.indexOf(document.activeElement);
+  if (i === -1) return;
+  let next = null;
+  if (e.key==='ArrowDown' || e.key==='ArrowRight') next = (i+1) % items.length;
+  else if (e.key==='ArrowUp' || e.key==='ArrowLeft') next = (i-1+items.length) % items.length;
+  else if (e.key==='Home') next = 0;
+  else if (e.key==='End') next = items.length-1;
+  if (next !== null){
+    e.preventDefault();
+    items[next].focus();
+    switchView(items[next].dataset.view);
+  }
+});
+
+document.getElementById('searchToggleBtn').addEventListener('click', openSearch);
+document.getElementById('searchCloseBtn').addEventListener('click', closeSearch);
+document.getElementById('searchInput').addEventListener('input', e=> renderSearchResults(e.target.value));
+document.addEventListener('keydown', e=>{
+  const panel = document.getElementById('searchPanel');
+  if (e.key === 'Escape'){
+    if (panel && !panel.hidden) closeSearch();
+    else if (document.getElementById('sidebar').classList.contains('open')) closeMobileSidebar();
+  }
+  if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'k'){ e.preventDefault(); openSearch(); }
+});
+
+function updateClock(){
+  const now = new Date(); const pad = n => String(n).padStart(2,'0');
+  document.getElementById('utcClock').textContent = pad(now.getUTCHours())+':'+pad(now.getUTCMinutes())+':'+pad(now.getUTCSeconds())+' UTC';
+}
+setInterval(updateClock,1000); updateClock();
+
+window.addEventListener('beforeprint', ()=>{ document.querySelectorAll('details').forEach(d=> d.setAttribute('open','')); });
+window.addEventListener('afterprint', ()=>{ document.querySelectorAll('details').forEach(d=> d.removeAttribute('open')); });
+
+/* ============================================================================
+   SECTION 7 — INIT
+   ============================================================================ */
+computeAstronomy();
+renderActionPanel();
+renderAllViews();
+renderLegend();
+renderDataHealth();
+refreshAllLiveLayers(false);
+setInterval(()=>refreshAllLiveLayers(false), 5*60*1000);
+(async function restoreUIPrefs(){
+  const cached = await cacheGet('uiPrefs');
+  if (cached && cached.data && VALID_VIEWS.includes(cached.data.lastView) && cached.data.lastView !== 'overview'){
+    uiPrefsState = { ...uiPrefsState, ...cached.data };
+    switchView(uiPrefsState.lastView);
+  }
+})();
+</script>
+</body>
+</html>
