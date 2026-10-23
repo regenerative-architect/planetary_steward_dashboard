@@ -1,0 +1,180 @@
+<!--
+  ============================================================================
+  OFFLINE, DEPTH AND EXPLAIN ADD-ON: provenance
+  ----------------------------------------------------------------------------
+  Authored by Claude (Anthropic) for the requesting user on 2026-10-15 as a companion to the Civic
+  Benevolence Dashboard. Three small, independent extras. It adds a card to About & Your Data, a toggle
+  to the sidebar footer and a background layer; it adds no view and removes nothing. Any merge order.
+  Remove: delete the block (and sw.js, manifest.webmanifest and icon.svg if you deployed them).
+
+  A. OFFLINE MODE (opt-in, off by default)
+  - Your spec asks for "full offline fallback". The data already survives offline (it is cached in
+    IndexedDB and labelled Cached); this adds the page itself. The app is one file, so the service worker
+    (sw.js) only keeps a copy of that file: network first, saved copy when the network fails; data and
+    relay requests are never touched.
+  - The card in About & Your Data registers sw.js and adds a manifest link only when the user presses
+    "Turn on offline mode". It needs sw.js next to this page and https or localhost, and says so when
+    unavailable. "Turn off" unregisters the worker, deletes the saved copy (cache civic-shell-v1) and removes
+    the manifest link. The dashboard's "Clear all saved data" does the same.
+  - The only network activity is the browser fetching sw.js and manifest.webmanifest from this page's own
+    origin, after the user turns offline mode on.
+
+  B. DEPTH
+  - A faint two-layer starfield behind the page drifts slowly as the main area scrolls (CSS transform only,
+    throttled to animation frames, not attached at all under prefers-reduced-motion) plus soft shadows and
+    top lighting on cards. Hidden from assistive technology; not printed.
+
+  C. EXPLAIN MODE (off by default)
+  - A sidebar toggle. While on, hovering or focusing a component shows a plain-language note and how to
+    extend it, wired with aria-describedby; Escape hides it. The notes live in the TIPS list in the module
+    (selector, title, text; specific selectors first). Only the on/off preference is stored.
+
+  DATA AND PRIVACY
+  - IndexedDB database civic_dashboard_shell_v1 holds only the Explain preference. Offline state lives in
+    the browser's own service-worker registration. Nothing is sent anywhere.
+
+  INTEGRATION POINTS
+  - Host DOM: #mainContent, #panel-about (.intro), .sidebar-footer, #refreshLiveBtn. Host global:
+    cacheClearAll (hooked). Tips refer to host names (VALID_VIEWS, TAB_LABELS, TIER_INFO, cardHTML,
+    badgeHTML, LIVE_CAPABLE_LAYERS, buildSearchIndex, layerStatus) and to the other add-ons' components.
+
+  LIMITS
+  - Tooltips appear on hover and keyboard focus; touch users get them when a control is focused. Service
+    workers are strict about scope: sw.js must sit in the same folder as the page.
+
+  VERIFICATION
+  Before delivery: the module parses as JavaScript, and sw.js was run in a Node sandbox
+  with fake caches, fetch and events (install, a failed pre-cache, activation cleanup,
+  an online page load that fills the cache, the offline fallback by exact URL and to the
+  saved index, and non-page requests left alone). The module was exercised in jsdom with
+  the other add-ons on a stub of the dashboard's hooks: opt-in registration (on, off,
+  failure, unsupported, insecure), the manifest link, the Clear-all hook, Explain mode
+  (hover, focus, Escape, description wiring, persistence, add-on components) and the
+  depth layer (scroll-linked, and still under reduced motion). NOT verified: a real
+  service worker in a real browser (updates, scope, cache eviction, installability), how
+  the depth layer and tooltips look and feel, or integration with the full dashboard
+  file.
+  ============================================================================
+-->
+<style id="sh-style">#shDepth{position:fixed;inset:0;z-index:-1;pointer-events:none;overflow:hidden}
+#shDepth i{position:absolute;inset:-12% 0;background-repeat:repeat}
+#shDepth i.a{background-image:radial-gradient(1px 1px at 30px 40px,rgba(255,255,255,.5),transparent),radial-gradient(1px 1px at 150px 120px,rgba(147,197,253,.5),transparent),radial-gradient(1.2px 1.2px at 220px 20px,rgba(255,255,255,.4),transparent);background-size:260px 200px;transform:translateY(calc(var(--sy,0px) * -0.04))}
+#shDepth i.b{background-image:radial-gradient(1.6px 1.6px at 60px 90px,rgba(255,255,255,.3),transparent),radial-gradient(1.4px 1.4px at 300px 200px,rgba(96,165,250,.35),transparent);background-size:420px 320px;transform:translateY(calc(var(--sy,0px) * -0.09))}
+.card,.facts-card,.action-card,.region-card{box-shadow:0 8px 24px rgba(0,0,0,.32),inset 0 1px 0 rgba(255,255,255,.06);background-image:linear-gradient(180deg,rgba(255,255,255,.035),transparent 45%)}
+#shTip{position:fixed;z-index:70;max-width:330px;padding:10px 12px;border-radius:10px;background:#0d1626;border:1px solid rgba(96,165,250,.55);box-shadow:0 10px 30px rgba(0,0,0,.5);font-size:.8rem;line-height:1.45;color:#e0e7ff;pointer-events:none}
+#shExplain[aria-pressed=true]{background:rgba(251,191,36,.18);border-color:rgba(251,191,36,.55)}
+.sh-dot{display:inline-block;width:7px;height:7px;border-radius:50%;margin-right:6px}
+#shOffBadge{font-size:.72rem;font-weight:600;color:#94a3b8;white-space:nowrap}
+@media print{#shDepth,#shTip,#shExplain,#shOffline{display:none!important}.card,.facts-card,.action-card,.region-card{box-shadow:none!important;background-image:none!important}}</style>
+<script id="sh-module">/* ============================================================================
+   SHELL MODULE: three small, independent, opt-in extras. Each block can be deleted on its own.
+   A. Depth: a faint two-layer starfield behind the page that drifts slowly with scrolling (transform only,
+      throttled to animation frames, switched off under prefers-reduced-motion) plus soft card shadows.
+   B. Offline mode: an opt-in card in About & Your Data. It registers sw.js (a service worker that keeps a
+      copy of this page only) and adds a web-app manifest link. Needs sw.js next to this page and https or
+      localhost. Turning it off unregisters the worker and deletes the saved page copy.
+   C. Explain mode: a sidebar toggle; while on, hovering or focusing a component shows a plain-language note
+      and how to extend it. Extend: add one row to TIPS (selector, title, text); order matters, specific first.
+   Expected outcome: nothing here touches the network until Offline mode is turned on by the user.
+   ============================================================================ */
+(function(){
+'use strict';
+try{
+if(!document.getElementById('mainContent')){console.info('Shell add-on: host dashboard not detected; skipped.'); return;}
+if(document.getElementById('shDepth')) return;
+const $=id=>document.getElementById(id);
+const esc=s=>String(s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+const DB='civic_dashboard_shell_v1';
+let dbp=null;
+const idb=()=>dbp||(dbp=new Promise((res,rej)=>{if(!window.indexedDB) return rej(new Error('no indexedDB')); const r=indexedDB.open(DB,1); r.onupgradeneeded=()=>r.result.createObjectStore('kv',{keyPath:'k'}); r.onsuccess=()=>res(r.result); r.onerror=()=>rej(r.error);}));
+const store=(mode,fn)=>idb().then(db=>new Promise((res,rej)=>{const tx=db.transaction('kv',mode),rq=fn(tx.objectStore('kv')); tx.oncomplete=()=>res(rq&&rq.result); tx.onerror=()=>rej(tx.error); tx.onabort=()=>rej(tx.error);})).catch(()=>null);
+const savePrefs=()=>store('readwrite',s=>s.put({k:'prefs',v:{explain:explainOn}}));
+
+/* ---- A. DEPTH ---- */
+const layer=document.createElement('div'); layer.id='shDepth'; layer.setAttribute('aria-hidden','true'); layer.innerHTML='<i class="a"></i><i class="b"></i>';
+document.body.insertBefore(layer,document.body.firstChild);
+const reduce=!!(window.matchMedia&&window.matchMedia('(prefers-reduced-motion: reduce)').matches);
+if(!reduce){
+  const m=$('mainContent'); let raf=0;
+  m.addEventListener('scroll',()=>{if(raf) return; raf=requestAnimationFrame(()=>{raf=0; layer.style.setProperty('--sy',m.scrollTop+'px');});},{passive:true});
+}
+
+/* ---- B. OFFLINE MODE (opt-in) ---- */
+const supported=()=>!!(navigator.serviceWorker&&window.caches);
+const secure=()=>window.isSecureContext!==false; // true on https and localhost
+const getReg=async()=>{try{return await navigator.serviceWorker.getRegistration();}catch(e){return null;}};
+const say=t=>{const m=$('shOffMsg'); if(m) m.textContent=t||'';};
+const badge=(label,color)=>{const b=$('shOffBadge'); if(b) b.innerHTML='<span class="sh-dot" style="background:'+color+'"></span>'+esc(label);};
+function manifest(add){
+  const l=document.querySelector('link[rel="manifest"]');
+  if(add&&!l){const k=document.createElement('link'); k.rel='manifest'; k.href='manifest.webmanifest'; document.head.appendChild(k);}
+  if(!add&&l) l.remove();
+}
+async function refreshOffline(){
+  const on=$('shOffOn'), off=$('shOffOff'); if(!on) return;
+  if(!supported()||!secure()){badge('Unavailable','#94a3b8'); on.disabled=true; off.disabled=true; say(!secure()?'Offline mode needs https or localhost.':'This browser does not support offline mode.'); return;}
+  const r=await getReg(); badge(r?'On':'Off',r?'#10b981':'#94a3b8'); on.disabled=!!r; off.disabled=!r;
+}
+async function turnOn(){
+  try{await navigator.serviceWorker.register('sw.js',{scope:'./'}); manifest(true); say('Offline mode is on. Let this page finish loading once while online; after that it can open without a connection.');}
+  catch(e){say('Could not turn it on: sw.js was not found next to this page, or the browser refused it.');}
+  refreshOffline();
+}
+async function turnOff(){
+  try{const r=await getReg(); if(r) await r.unregister(); const ks=await window.caches.keys(); await Promise.all(ks.filter(k=>k.indexOf('civic-shell-')===0).map(k=>window.caches.delete(k)));}catch(e){}
+  manifest(false); say('Offline mode is off and the saved copy of this page was removed.'); refreshOffline();
+}
+const about=$('panel-about');
+if(about){
+  const card=document.createElement('div'); card.className='facts-card'; card.id='shOffline';
+  card.innerHTML='<div class="card-header"><h3>Offline mode</h3><span id="shOffBadge"></span></div>'
+    +'<p class="fact-text">This page already keeps the latest data it fetched in your browser. Offline mode also keeps a copy of the page itself, so it can open without a connection. It needs <code>sw.js</code> next to this page, and https or localhost. Nothing is sent anywhere, and it stays off until you turn it on.</p>'
+    +'<div class="form-row"><button id="shOffOn" class="btn" type="button">Turn on offline mode</button><button id="shOffOff" class="btn btn-secondary" type="button">Turn off</button></div><p id="shOffMsg" class="fine-print" role="status" aria-live="polite"></p>';
+  const intro=about.querySelector('.intro'); if(intro) intro.insertAdjacentElement('afterend',card); else about.appendChild(card);
+  $('shOffOn').addEventListener('click',turnOn); $('shOffOff').addEventListener('click',turnOff);
+  refreshOffline();
+}
+
+/* ---- C. EXPLAIN MODE ---- */
+const TIPS=[
+ ['#cmStars','Room constellation','You are the centre and each connected peer is a star. Drawn by the Commons add-on from its peer list.'],
+ ['#gdTree','Skill constellation','Each star is a skill from the TREE list in the Journey add-on. Select one to read it; unlock it with skill points.'],
+ ['#mpSvg','World map','Plots data the dashboard has already loaded. To add a layer, add an entry to LAYERS in the Map add-on.'],
+ ['#gdHud','Your progress','Level, XP and unspent skill points. It opens the Journey.'],
+ ['.badge','Where this figure came from','Live was fetched just now, Cached is the last good copy saved in your browser, Calculated is computed here, Reference is hand-checked and dated, Unavailable means nothing could be fetched. The tiers live in TIER_INFO, and badgeHTML(tier) draws one.'],
+ ['.card','A figure card','Built by cardHTML(title, status, rows). status.tier picks the badge, status.data holds the figures, and a card with no data says so instead of guessing.'],
+ ['#refreshLiveBtn','Refresh live data','Fetches every live source once (the page also refreshes itself every 5 minutes). Sources are listed in LIVE_CAPABLE_LAYERS; a new one needs a loader, a layerStatus entry and a card.'],
+ ['#searchToggleBtn','Search','Searches the text already on the page, locally. buildSearchIndex() indexes cards, list items and table rows after every render.'],
+ ['#dataHealth','Source health','Counts the live sources that answered on the last refresh. At zero, the offline banner appears.'],
+ ['.sidebar-nav .nav-item','A view','Each item opens one view. To add a view: push its id onto VALID_VIEWS and TAB_LABELS, add a nav button and a section with the same data-view, and switchView() does the rest.']
+];
+let explainOn=false, cur=null;
+const tip=document.createElement('div'); tip.id='shTip'; tip.setAttribute('role','tooltip'); tip.hidden=true; document.body.appendChild(tip);
+const find=el=>{if(!el||!el.closest) return null; for(const [s,t,d] of TIPS){const m=el.closest(s); if(m) return {m,t,d};} return null;};
+function hide(){tip.hidden=true; if(cur){cur.removeAttribute('aria-describedby'); cur=null;}}
+function show(e){
+  if(!explainOn) return; const f=find(e.target); if(!f){hide(); return;}
+  if(cur&&cur!==f.m) cur.removeAttribute('aria-describedby');
+  cur=f.m; cur.setAttribute('aria-describedby','shTip');
+  tip.innerHTML='<strong>'+esc(f.t)+'</strong><br>'+esc(f.d); tip.hidden=false;
+  const r=f.m.getBoundingClientRect(); tip.style.left=Math.max(8,Math.min(r.left,(window.innerWidth||800)-350))+'px'; tip.style.top=(r.bottom+8)+'px';
+}
+document.addEventListener('mouseover',show); document.addEventListener('focusin',show);
+document.addEventListener('mouseout',e=>{if(!e.relatedTarget||!find(e.relatedTarget)) hide();});
+document.addEventListener('focusout',hide);
+document.addEventListener('keydown',e=>{if(e.key==='Escape') hide();});
+const btn=document.createElement('button'); btn.id='shExplain'; btn.type='button'; btn.className='refresh-btn'; btn.setAttribute('aria-pressed','false');
+const paintExplain=()=>{btn.setAttribute('aria-pressed',explainOn?'true':'false'); btn.textContent='? Explain mode: '+(explainOn?'on':'off'); if(!explainOn) hide();};
+const sf=document.querySelector('.sidebar-footer'), rb=$('refreshLiveBtn');
+if(sf) sf.insertBefore(btn,rb&&rb.parentNode===sf?rb:null); else document.body.appendChild(btn);
+btn.addEventListener('click',()=>{explainOn=!explainOn; paintExplain(); savePrefs();});
+paintExplain();
+
+/* ---- Clear-all hook, and restore preferences ---- */
+if(typeof cacheClearAll==='function'){
+  const o=window.cacheClearAll;
+  window.cacheClearAll=async function(){await o.apply(this,arguments); await store('readwrite',s=>s.clear()); explainOn=false; paintExplain(); if(supported()&&secure()) await turnOff();};
+}
+store('readonly',s=>s.get('prefs')).then(r=>{if(r&&r.v&&r.v.explain){explainOn=true; paintExplain();}});
+}catch(err){console.warn('Shell add-on failed to start; the dashboard is unaffected.',err);}
+})();</script>

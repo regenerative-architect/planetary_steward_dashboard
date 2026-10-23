@@ -1,0 +1,231 @@
+<!--
+  ============================================================================
+  GUIDED PATHWAYS ADD-ON: provenance
+  ----------------------------------------------------------------------------
+  Authored by Claude (Anthropic) for the requesting user on 2026-10-14 as a companion to the Civic
+  Benevolence Dashboard. It adds one navigation item ("Pathways"), one view and a first-visit welcome
+  dialog, and removes nothing. It works alone and uses the other add-ons when they are present. Any
+  merge order works. Remove: delete the block.
+
+  PURPOSE
+  - "Example workflows or interaction pathways" with stated outcomes: four short routes (Teach with it,
+    Prepare my household, Brief a decision-maker, Join the effort), each step saying what to do and what
+    you will be able to do afterwards. The welcome dialog offers the routes once, on a first visit; it is
+    skippable (button or Escape), never shown on a deep link, and replayable from the Pathways view.
+  - Steps tick themselves on an event (a section opened, a source link opened, a place chosen, the data
+    snapshot shown, a Commons room joined, a note shared). That records that you looked, not that you
+    understood, which the page says plainly; any step can also be ticked by hand.
+  - Steps that need the Commons or Journey add-ons are hidden when those are absent, and a step whose
+    section is not installed shows no Open button.
+  - The text is guidance, not advice. It points to official sources and says the dashboard is not an
+    alert system.
+
+  DATA AND PRIVACY
+  - Progress (events seen, manual ticks, rewards given, whether the welcome was shown) lives in the
+    IndexedDB database civic_dashboard_paths_v1; nothing is sent anywhere. Reset is in the Pathways
+    view, and the dashboard's "Clear all saved data" resets it too (hook on cacheClearAll).
+  - The only thing that can reach other people is a section suggestion, sent by pressing "Suggest to my
+    party" on a step, through the Commons room's existing suggestion channel.
+
+  INTEGRATION POINTS
+  - Host globals read: switchView, VALID_VIEWS, TAB_LABELS, nearLocation, cacheClearAll. Host DOM:
+    #mainContent, #tab-overview, #panel-overview, links with target _blank inside the main area, and
+    #snapshotBtn. Optional: window.CivicJourney.reward (one-time XP: 8 per step, 25 per pathway) and
+    window.CivicCommons (onConnect, onNote, onLeave, state, suggest).
+  - Missing pieces degrade quietly: no error, just fewer automatic ticks.
+
+  LIMITS
+  - Event detection is generous by design: it cannot know whether anyone read anything.
+
+  VERIFICATION
+  Before delivery: the module parses as JavaScript and was exercised in jsdom with the
+  other add-ons on a stub of the dashboard's hooks: the first-visit welcome (dialog
+  semantics, focus, Escape, shown once, replay, skipped on a deep link); the four
+  pathways; automatic detection of sections opened, source links, a chosen place, the
+  data snapshot, and a Commons room and note; manual ticks; completion with one-time
+  Journey XP; steps hidden when an add-on is absent; suggesting a step to the party;
+  persistence, reset and the Clear-all hook. NOT verified: real browsers (the welcome's
+  layout and motion, reduced-motion handling), live relays, or integration with the full
+  dashboard file.
+  ============================================================================
+-->
+<style id="pw-style">#pwSplash{position:fixed;inset:0;z-index:60;display:flex;align-items:center;justify-content:center;padding:20px;background:radial-gradient(ellipse at 50% 30%,#14213d 0%,#0a1220 70%);overflow-y:auto}
+#pwSplash .pw-sky{position:absolute;inset:0;background-image:radial-gradient(1.5px 1.5px at 20% 30%,#fff,transparent),radial-gradient(1px 1px at 70% 20%,#cbd5e1,transparent),radial-gradient(1.5px 1.5px at 40% 75%,#93c5fd,transparent),radial-gradient(1px 1px at 85% 65%,#fff,transparent),radial-gradient(1px 1px at 10% 80%,#e2e8f0,transparent),radial-gradient(1px 1px at 55% 50%,#bfdbfe,transparent);opacity:.8;animation:pwTw 6s ease-in-out infinite alternate}
+.pw-box{position:relative;max-width:640px;width:100%;text-align:center}
+.pw-box h2{font-size:1.6rem;margin-bottom:8px;font-weight:700}
+.pw-box p{color:#94a3b8;font-size:.92rem}
+.pw-cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:12px;margin:20px 0}
+.pw-card{display:flex;flex-direction:column;gap:4px;text-align:left;padding:14px 16px;min-height:72px;border-radius:12px;border:1px solid rgba(255,255,255,.18);background:rgba(255,255,255,.05);color:#e0e7ff;cursor:pointer;font:inherit}
+.pw-card:hover,.pw-card:focus-visible{border-color:#60a5fa;background:rgba(96,165,250,.12);outline:none}
+.pw-card span{color:#94a3b8;font-size:.78rem}
+.pw-anim{animation:pwIn .5s ease both}
+@keyframes pwIn{from{opacity:0;transform:translateY(12px)}to{opacity:1;transform:none}}
+@keyframes pwTw{from{opacity:.45}to{opacity:.9}}
+@media (prefers-reduced-motion:reduce){.pw-anim,#pwSplash .pw-sky{animation:none!important}}
+@media print{#pwSplash{display:none!important}}
+#pwList ol{margin:10px 0 0;padding:0}
+.pw-step{list-style:none;padding:10px 0;border-bottom:1px solid rgba(255,255,255,.06)}
+.pw-step:last-child{border-bottom:none}
+.pw-done{color:#34d399;margin-top:10px}</style>
+<script id="pw-module">/* ============================================================================
+   GUIDED PATHWAYS MODULE: short routes through the dashboard for a purpose, each step with what to do
+   and what you will be able to do afterwards. Doubles as the first-visit welcome (a skippable dialog
+   that offers the routes). Steps tick themselves when the matching thing happens (a section opened, a
+   source link opened, a place chosen, a Commons room joined...), which records that you looked, not that
+   you understood; every step can also be ticked by hand. Progress is local (IndexedDB).
+   Blocks: A data | B state + storage | C progress | D welcome | E host wiring.
+   Extend: add a pathway = one object in PATHS; a step is [title, preferred views, event keys, what to
+   do, outcome, optional need ('commons' or 'journey')]. Event keys: v:<view>, src, near, snap, room, note.
+   Optional companions: window.CivicJourney.reward (XP) and window.CivicCommons.suggest (share a step).
+   ============================================================================ */
+(function(){
+'use strict';
+try{
+if(typeof switchView!=='function'||typeof VALID_VIEWS==='undefined'||typeof TAB_LABELS==='undefined'||!document.getElementById('mainContent')){
+  console.info('Pathways add-on: host dashboard not detected; skipped.'); return;
+}
+if(document.getElementById('panel-paths')) return;
+const $=id=>document.getElementById(id);
+const esc=s=>String(s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+const DB='civic_dashboard_paths_v1';
+const getNear=()=>{try{return (typeof nearLocation!=='undefined'&&nearLocation&&Number.isFinite(nearLocation.lat))?nearLocation:null;}catch(e){return null;}};
+const avail=k=>!k||(k==='commons'?!!window.CivicCommons:VALID_VIEWS.includes('journey'));
+const stepView=s=>(s[1]||[]).find(v=>VALID_VIEWS.includes(v))||null;
+
+/* ---- A. DATA ---- */
+const PATHS=[
+ {id:'teach',n:'Teach with it',who:'Educators and facilitators',s:[
+  ['Start with the labels',['overview'],['v:overview'],'Open the Overview and expand "How this dashboard works". Ask learners what Live, Cached, Calculated, Reference and Unavailable mean.','Outcome: learners can say how a figure was obtained before they trust it.'],
+  ['Read a live feed',['live'],['v:live'],'In the Live Earth Monitor, find the strongest earthquake of the last 24 hours, with its source and age.','Outcome: learners can read a live figure together with its status and time.'],
+  ['Put events on a map',['map','biomes'],['v:map','v:biomes'],'Look at where reports cluster. Ask: what does an empty region tell you, and what does it not?','Outcome: learners connect events to places and see the limits of a feed.'],
+  ['Read a long-run trend',['development'],['v:development'],'Pick one indicator. Is higher or lower better? What might a world average hide?','Outcome: learners separate a trend from a verdict.'],
+  ['Turn reading into action',['action'],['src'],'Open one source link or citizen-science program from Take Action.','Outcome: learners know where to go next.']]},
+ {id:'ready',n:'Prepare my household',who:'Anyone planning ahead',s:[
+  ['See your local picture',['near'],['near'],'Under Near You, choose a place. You will see local weather, modelled air quality and nearby events. Nothing about the place is shared.','Outcome: you know what the data says near you.'],
+  ['Find official guidance',['action'],['src'],'In Take Action, open a "Stay safe" resource, then find your own local emergency authority.','Outcome: you know where official guidance lives.'],
+  ['Learn how alerts are labelled',['humanitarian'],['v:humanitarian'],'Read how GDACS shows orange and red alert levels.','Outcome: you can read an alert level, and you know it is not a local warning.'],
+  ['Know the limits',['about'],['v:about'],'Read "What this dashboard deliberately does not do".','Outcome: you know this page is not an alert system.'],
+  ['Make a plan',['journey'],['v:journey'],'Open the Journey and, with the Preparer skills, tick what is already done on the readiness checklist.','Outcome: a short list of gaps, kept private on your device.','journey']]},
+ {id:'brief',n:'Brief a decision-maker',who:'Analysts, officials and journalists',s:[
+  ['Check the baselines',['overview'],['v:overview'],'Read the climate cards and the note on baselines: the temperature figure is land-only, against 1901 to 1930.','Outcome: you can state what a number is measured against.'],
+  ['Note the data years',['development'],['v:development'],'Each World Bank card shows its latest year. Record year, value and direction.','Outcome: you can cite figures with their year.'],
+  ['Respect the categories',['humanitarian'],['v:humanitarian'],'Read the UNHCR figures by category, and the note that they are not summed or ranked here.','Outcome: you avoid adding what should not be added.'],
+  ['Take the data with you',['about'],['snap'],'In About & Your Data, show the JSON snapshot and copy it.','Outcome: a dated record of what you cited.'],
+  ['Cite the sources',['live'],['src'],'Open the source links under Sources & Status.','Outcome: every figure traces back to its provider.']]},
+ {id:'join',n:'Join the effort',who:'Citizen scientists and community stewards',s:[
+  ['Pick a program',['action'],['src'],'In Take Action, open a citizen-science program such as iNaturalist, eBird or Zooniverse.','Outcome: you have a concrete way to contribute observations.'],
+  ['See what is at stake',['biodiversity'],['v:biodiversity'],'Read the Red List and population facts.','Outcome: you can explain why conservation status matters.'],
+  ['Gather a party',['commons'],['room'],'Join or create a private room under Commons (P2P).','Outcome: you are collaborating without a central server.','commons'],
+  ['Share what you noticed',['commons'],['note'],'Post a short field note, with no personal details.','Outcome: a shared record your party can build on.','commons'],
+  ['Level up together',['journey'],['v:journey'],'Open the Journey, choose a calling and try a party objective.','Outcome: you are learning and working with others.','journey']]}
+];
+
+/* ---- B. STATE AND STORAGE ---- */
+const blank=()=>({splash:false,seen:{},man:{},rew:{},fin:{}});
+let P=blank(), ready=false, dirty=false, lastV='', prevFocus=null;
+let dbp=null;
+const idb=()=>dbp||(dbp=new Promise((res,rej)=>{if(!window.indexedDB) return rej(new Error('no indexedDB')); const r=indexedDB.open(DB,1); r.onupgradeneeded=()=>r.result.createObjectStore('kv',{keyPath:'k'}); r.onsuccess=()=>res(r.result); r.onerror=()=>rej(r.error);}));
+const store=(mode,fn)=>idb().then(db=>new Promise((res,rej)=>{const tx=db.transaction('kv',mode),rq=fn(tx.objectStore('kv')); tx.oncomplete=()=>res(rq&&rq.result); tx.onerror=()=>rej(tx.error); tx.onabort=()=>rej(tx.error);})).catch(()=>null);
+let st=0; const save=()=>{clearTimeout(st); st=setTimeout(()=>store('readwrite',s=>s.put({k:'me',v:P})),250);};
+
+/* ---- C. PROGRESS ---- */
+const PANEL=`
+<h2>Guided Pathways</h2>
+<p class="intro">Short routes through the dashboard for a purpose, each step with what to do and what you will be able to do afterwards. Steps tick themselves when you open the section or link (that records that you looked, not that you understood, so use the prompts), and you can tick any step yourself. Progress stays in this browser.</p>
+<div class="form-row"><button id="pwReplay" class="btn btn-secondary" type="button">Replay the welcome</button><span id="pwResetArea"></span></div>
+<div id="pwList"></div>`;
+function build(){
+  $('pwList').innerHTML=PATHS.map(p=>'<details class="sources-details" id="pwD-'+p.id+'" style="margin-top:12px"><summary><strong>'+esc(p.n)+'</strong> <span class="muted">· '+esc(p.who)+' · <span id="pwP-'+p.id+'"></span></span></summary><ol>'
+    +p.s.map((s,i)=>'<li class="pw-step" id="pwS-'+p.id+'-'+i+'"><label class="check-row"><input type="checkbox" data-s="'+p.id+':'+i+'"> <strong>'+(i+1)+'. '+esc(s[0])+'</strong></label><div class="fine-print" style="margin:2px 0 2px 26px">'+esc(s[3])+'</div><div class="fine-print" style="margin:2px 0 6px 26px">'+esc(s[4])+'</div><div class="form-row" style="margin-left:26px"><button type="button" class="btn btn-secondary" data-go="'+p.id+':'+i+'"></button><button type="button" class="btn btn-secondary" data-sug="'+p.id+':'+i+'" hidden>Suggest to my party</button></div></li>').join('')
+    +'</ol><p class="pw-done" id="pwF-'+p.id+'" hidden></p></details>').join('');
+}
+function paint(){
+  if(!ready) return;
+  const CC=window.CivicCommons, J=window.CivicJourney, on=!!(CC&&CC.state&&CC.state().on), canReward=!!(J&&J.ready&&J.reward);
+  PATHS.forEach(p=>{
+    let n=0,t=0;
+    p.s.forEach((s,i)=>{
+      const row=$('pwS-'+p.id+'-'+i), a=avail(s[5]); row.hidden=!a; if(!a) return; t++;
+      const key=p.id+':'+i, auto=s[2].some(k=>P.seen[k]), d=auto||!!P.man[key]; if(d) n++;
+      const cb=row.querySelector('input'); cb.checked=d; cb.disabled=auto;
+      const v=stepView(s), go=row.querySelector('[data-go]'); go.hidden=!v; if(v) go.textContent='Open '+(TAB_LABELS[v]||v);
+      row.querySelector('[data-sug]').hidden=!(on&&v&&CC.suggest);
+      if(d&&canReward&&!P.rew[key]){J.reward('path:'+key,8,'pathway step'); P.rew[key]=1; dirty=true;}
+    });
+    $('pwP-'+p.id).textContent=n+' of '+t;
+    const f=$('pwF-'+p.id);
+    if(t&&n===t){f.hidden=false; f.textContent='Pathway complete: '+p.n+'. Every step is done.'; if(canReward&&!P.fin[p.id]){J.reward('path:'+p.id,25,'finished '+p.n); P.fin[p.id]=1; dirty=true;}}
+    else f.hidden=true;
+  });
+  if(dirty){dirty=false; save();}
+}
+const ev=k=>{if(!P.seen[k]){P.seen[k]=1; save(); paint();}};
+
+/* ---- D. WELCOME: skippable, shown once, never on a deep link; Escape closes; motion respects reduced-motion ---- */
+function closeSplash(){const el=$('pwSplash'); if(el) el.remove(); if(prevFocus&&prevFocus.focus) try{prevFocus.focus();}catch(e){}}
+function openPath(id){const d=$('pwD-'+id); if(d) d.open=true; switchView('paths');}
+function showSplash(){
+  if($('pwSplash')) return;
+  const el=document.createElement('div'); el.id='pwSplash'; el.setAttribute('role','dialog'); el.setAttribute('aria-modal','true'); el.setAttribute('aria-labelledby','pwSplashT');
+  el.innerHTML='<div class="pw-sky" aria-hidden="true"></div><div class="pw-box pw-anim"><h2 id="pwSplashT">Civic Benevolence Dashboard</h2><p>Real public data, honestly labeled. Choose a guided path, or simply explore.</p><div class="pw-cards">'
+    +PATHS.map((p,i)=>'<button type="button" class="pw-card pw-anim" style="animation-delay:'+(120+i*90)+'ms" data-p="'+p.id+'"><strong>'+esc(p.n)+'</strong><span>'+esc(p.who)+'</span></button>').join('')
+    +'</div><button type="button" class="btn btn-secondary" data-skip="1">Just explore</button></div>';
+  prevFocus=document.activeElement; document.body.appendChild(el);
+  const f=el.querySelector('button'); if(f) f.focus();
+}
+document.addEventListener('keydown',e=>{
+  const el=$('pwSplash'); if(!el) return;
+  if(e.key==='Escape'){closeSplash(); return;}
+  if(e.key==='Tab'){const b=Array.from(el.querySelectorAll('button')); if(!b.length) return; const i=b.indexOf(document.activeElement); if(e.shiftKey&&i<=0){e.preventDefault(); b[b.length-1].focus();} else if(!e.shiftKey&&i===b.length-1){e.preventDefault(); b[0].focus();}}
+});
+document.addEventListener('click',e=>{
+  const t=e.target; if(!t||!t.closest) return;
+  const sp=t.closest('#pwSplash');
+  if(sp){const c=t.closest('[data-p]'); if(c){closeSplash(); openPath(c.dataset.p);} else if(t.closest('[data-skip]')) closeSplash(); return;}
+  if(t.closest('#mainContent a[target="_blank"]')) ev('src');
+  if(t.closest('#snapshotBtn')) ev('snap');
+});
+
+/* ---- E. HOST WIRING ---- */
+VALID_VIEWS.push('paths'); TAB_LABELS.paths='Pathways';
+const nav=document.createElement('button');
+nav.className='nav-item'; nav.id='tab-paths'; nav.dataset.view='paths';
+nav.setAttribute('role','tab'); nav.setAttribute('aria-selected','false'); nav.setAttribute('aria-controls','panel-paths');
+nav.innerHTML='<span class="nav-dot"></span>Pathways';
+($('tab-overview')||document.querySelector('.nav-item')).insertAdjacentElement('afterend',nav);
+nav.addEventListener('click',()=>switchView('paths'));
+const sec=document.createElement('section');
+sec.className='view'; sec.id='panel-paths'; sec.dataset.view='paths'; sec.tabIndex=0;
+sec.setAttribute('role','tabpanel'); sec.setAttribute('aria-labelledby','tab-paths'); sec.innerHTML=PANEL;
+($('panel-overview')||$('mainContent').firstElementChild).insertAdjacentElement('afterend',sec);
+build();
+$('pwList').addEventListener('change',e=>{const k=e.target.dataset&&e.target.dataset.s; if(!k) return; if(e.target.checked) P.man[k]=1; else delete P.man[k]; save(); paint();});
+$('pwList').addEventListener('click',e=>{
+  const b=e.target.closest('button'); if(!b) return;
+  const key=b.dataset.go||b.dataset.sug; if(!key) return;
+  const [pid,i]=key.split(':'), p=PATHS.find(x=>x.id===pid), s=p&&p.s[+i], v=s&&stepView(s); if(!v) return;
+  if(b.dataset.go) switchView(v); else if(window.CivicCommons&&window.CivicCommons.suggest) window.CivicCommons.suggest(v);
+});
+$('pwReplay').addEventListener('click',showSplash);
+function resetArea(){
+  const a=$('pwResetArea'); a.innerHTML='<button id="pwReset" class="btn btn-secondary" type="button">Reset pathway progress…</button>';
+  $('pwReset').addEventListener('click',()=>{a.innerHTML='<span class="muted">Erase pathway progress in this browser?</span> <button id="pwResetYes" class="btn btn-danger" type="button">Yes, reset</button> <button id="pwResetNo" class="btn btn-secondary" type="button">Cancel</button>'; $('pwResetNo').addEventListener('click',resetArea); $('pwResetYes').addEventListener('click',async()=>{await reset(false); resetArea();});});
+}
+async function reset(all){clearTimeout(st); await store('readwrite',s=>s.clear()); const keep=!all&&P.splash; P=blank(); P.splash=keep; if(keep) save(); paint();}
+if(typeof cacheClearAll==='function'){const o=window.cacheClearAll; window.cacheClearAll=async function(){await o.apply(this,arguments); await reset(true);};}
+window.CivicPaths={v:1,get ready(){return ready;},open:openPath};
+
+store('readonly',s=>s.get('me')).then(r=>{
+  if(r&&r.v) P=Object.assign(blank(),r.v);
+  ready=true; resetArea(); paint();
+  const onView=v=>{lastV=v; ev('v:'+v);};
+  const cur=document.querySelector('#mainContent .view.active'); if(cur&&cur.dataset.view) onView(cur.dataset.view);
+  new MutationObserver(()=>{const a=document.querySelector('#mainContent .view.active'), v=a&&a.dataset.view; if(v&&v!==lastV) onView(v);}).observe($('mainContent'),{attributes:true,attributeFilter:['class'],subtree:true});
+  setInterval(()=>{if(getNear()) ev('near'); paint();},2000);
+  let tries=0; const tryCC=()=>{const CC=window.CivicCommons; if(CC){CC.onConnect(()=>{ev('room'); paint();}); CC.onNote(()=>ev('note')); CC.onLeave(()=>paint()); return;} if(++tries<20) setTimeout(tryCC,500);}; tryCC();
+  const hash=location.hash.replace(/^#\/?/,'');
+  if(!P.splash&&!hash){P.splash=true; save(); showSplash();}
+  if(hash==='paths') switchView('paths',{fromHash:true});
+});
+}catch(err){console.warn('Pathways add-on failed to start; the dashboard is unaffected.',err);}
+})();</script>

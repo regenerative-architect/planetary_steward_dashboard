@@ -1,0 +1,384 @@
+<!--
+  ============================================================================
+  STEWARDSHIP JOURNEY ADD-ON: provenance
+  ----------------------------------------------------------------------------
+  Authored by Claude (Anthropic) for the requesting user on 2026-10-14 as a companion to the Civic
+  Benevolence Dashboard. It adds one navigation item ("Journey"), one view and a small sidebar HUD, and
+  removes nothing. It works alone; party play needs commons-addon.html and map pings need map-addon.html.
+  Any merge order works. Remove: delete the block.
+
+  DESIGN: MMO ideas, without the dark patterns
+  - Adopted: XP and levels (capped at 10), a skill tree drawn as a constellation (9 stars; each of the 8
+    skills unlocks something that works, the capstone is a title), quests, callings (classes), parties
+    (Commons rooms), co-op objectives ("musters"), map pings, a party roll, and "rested" XP (a daily cap on
+    repeatable XP that tells you to stop instead of rewarding grinding).
+  - Not adopted, on purpose: streaks, rankings or leaderboards, timers and FOMO events, loot boxes,
+    trading, PvP, public guild lists or lobbies, and any power over other players (no kick, ban or
+    moderation perks).
+  - Skill points: one at the start plus one per level (ten in all) equal the total cost of every star,
+    so nothing is scarce and nothing can be missed.
+  - XP comes from exploring, checking sources, quests and live-data quiz answers. Repeatable XP stops at
+    120 a day; quests and first visits are one-time and exempt. Wrong quiz answers cost nothing.
+  - Quiz questions are built from figures already on the page; with no live or cached data there is no
+    quiz rather than an invented question. Field Guide entries are short, sourced restatements of
+    well-established facts. The readiness checklist is self-reported, private and never shared.
+
+  DATA AND PRIVACY
+  - Progress (XP, level, skills, quests, checklist ticks, calling, the sharing switch) lives in the
+    IndexedDB database civic_dashboard_journey_v1. The Journey itself sends nothing anywhere. Reset is in
+    the panel, and the dashboard's "Clear all saved data" also resets it (hook on cacheClearAll).
+  - Shared with a party only on your choice: calling and level (Roll Call, off by default), your completion
+    of an objective you explicitly joined, and pings you place. Never your location, quiz results,
+    checklist, or anything from Near You.
+
+  PARTY PROTOCOL (three Trystero actions on the Commons room; names fit the 12-byte limit)
+  - "roll": {c: calling, l: level}; accepted only for known callings and levels 1 to 10. Titles are
+    computed locally, never taken from the sender. An invalid payload removes the sender from the roll.
+  - "muster": {k:'prop', n} or {k:'done', n} or {k:'snap', objs:[n], mine:[n]}; n must index a fixed catalog
+    of six objectives (no free text); at most 3 active. A snapshot only ever records the sender's own
+    completions, so nobody can mark someone else done. An objective completes when every unmuted member
+    has reported.
+  - "ping": {k:'look'|'ask'|'thanks', lat, lon}; numbers only, in range, rounded to 0.1 degree; 90 s
+    lifetime; at most 20 at once; one outgoing ping every 5 s.
+  - Every incoming message first passes the Commons guard (mute, 12-peer cap, per-peer rate limit).
+
+  INTEGRATION POINTS
+  - Host globals read: switchView, VALID_VIEWS, TAB_LABELS, nearLocation, layerStatus, cacheClearAll.
+    Host DOM: #mainContent, #tab-overview, #panel-overview, .sidebar-footer. Uses window.CivicCommons (v1)
+    and the window.CivicMap draw hook when present. Missing pieces give a clear message, never an error. It exposes
+    window.CivicJourney.reward(id, xp, label): a one-time reward (at most 40 XP, exempt from the daily cap)
+    that companion add-ons such as pathways-addon.html can grant.
+
+  LIMITS
+  - The game layer is local and honour-based: anyone can edit their own browser state, and it only affects
+    their own copy. Party messages are unsigned, like all Commons traffic.
+
+  VERIFICATION
+  Before delivery: the module parses as JavaScript and was exercised in jsdom together
+  with the Commons and World Map add-ons on a stub of the dashboard's hooks: nav, HUD
+  and panel placement; XP, first-visit rewards and quests; skill unlocking and
+  prerequisites (mouse and keyboard); Field Guide, quiz (right, wrong, and no data),
+  checklist and source-link tracking; the daily cap and level 10; persistence, two-step
+  reset and the Clear-all hook; and, with two simulated browsers in one Practice room,
+  the party roll, objectives (joining, completion, invalid and oversized payloads) and
+  map pings (gating, rate limit, invalid payloads, surviving redraws, clearing on
+  leave). NOT verified: real browsers (layout, the constellation on small screens,
+  click-to-ping coordinates), live relays or WebRTC between devices, or integration with
+  the full dashboard file.
+  ============================================================================
+-->
+<style id="gd-style">#gdHud{width:100%;text-align:left;line-height:1.35}
+.gd-bar{height:6px;border-radius:3px;background:rgba(255,255,255,.12);margin-top:6px;overflow:hidden}
+.gd-bar i{display:block;height:100%;background:linear-gradient(90deg,#60a5fa,#34d399)}
+#gdToast{position:fixed;right:16px;bottom:52px;z-index:35;max-width:320px;padding:10px 14px;border-radius:10px;background:rgba(13,22,38,.97);border:1px solid rgba(96,165,250,.5);font-size:.82rem}
+#gdTree{display:block;width:100%;max-width:560px;margin:8px 0}
+#gdTree g[role=button]{cursor:pointer}
+#gdTree g[role=button]:focus-visible circle{stroke:#fff;stroke-width:3.5}
+#panel-journey .gd-row{display:flex;gap:10px;align-items:center;justify-content:space-between;flex-wrap:wrap;padding:8px 0;border-bottom:1px solid rgba(255,255,255,.06)}
+#panel-journey .gd-row:last-child{border-bottom:none}
+#panel-journey .gd-done{color:#34d399}
+#panel-journey ul.gd-plain{list-style:none;margin:0}
+#panel-journey .gd-opt{display:block;width:100%;text-align:left;margin:6px 0}
+@media print{#gdToast,#gdHud{display:none!important}}</style>
+<script id="gd-module">/* ============================================================================
+   STEWARDSHIP JOURNEY MODULE: a light, non-coercive game layer (MMO ideas, minus the dark patterns).
+   Blocks: A data (skills, quests, guide, checklist) | B state + storage | C XP, quests, tracking |
+           D skills + panels | E party play over the Commons API | F host wiring.
+   Adopted from MMOs: XP and levels (capped at 10), a skill tree (drawn as a constellation), quests,
+   callings (classes), parties (Commons rooms), co-op objectives (musters), map pings, a party roll,
+   "rested" XP (a daily cap that tells you to stop, instead of rewarding grinding).
+   Deliberately NOT adopted: streaks, rankings, timers, loot boxes, public guild lists, trading, PvP.
+   Extend: add a quest = one entry in QUESTS; add a skill = one node in TREE plus whatever checks owned(id).
+   Multiplayer rides on window.CivicCommons (commons-addon.html); pings draw through window.CivicMap hooks.
+   ============================================================================ */
+(function(){
+'use strict';
+try{
+if(typeof switchView!=='function'||typeof VALID_VIEWS==='undefined'||typeof TAB_LABELS==='undefined'||!document.getElementById('mainContent')){
+  console.info('Journey add-on: host dashboard not detected; skipped.'); return;
+}
+if(document.getElementById('panel-journey')) return;
+const $=id=>document.getElementById(id);
+const esc=s=>String(s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+const DB='civic_dashboard_journey_v1', CAP=120, MAXL=10, need=l=>50+30*(l-1);
+const CALLINGS=['Observer','Preparer','Educator','Steward'];
+const ttl=(c,l,x)=>(c?c+' '+(l>=7?'III':l>=3?'II':'I'):'Newcomer')+(x?' ★':'');
+const getNear=()=>{try{return (typeof nearLocation!=='undefined'&&nearLocation&&Number.isFinite(nearLocation.lat))?nearLocation:null;}catch(e){return null;}};
+const today=()=>new Date().toLocaleDateString('en-CA');
+const rnd=n=>crypto.getRandomValues(new Uint8Array(n));
+
+/* ---- A. DATA ---- */
+const TREE=[
+ {b:'Observer',a:-90,n:[{id:'o1',t:'Field Guide',d:'Unlocks Field Guide set I: short, sourced explainers.',c:1},{id:'o2',t:'Pop Quiz',d:'Unlocks live-data quiz questions (+XP when right, nothing lost when wrong) and Field Guide set II.',c:2,r:'o1'}]},
+ {b:'Cartographer',a:0,n:[{id:'c1',t:'Pin Drop',d:'Place "look here" pings on the World Map for your party.',c:1},{id:'c2',t:'Signal Set',d:'Adds "question" and "thanks" pings.',c:1,r:'c1'}]},
+ {b:'Preparer',a:90,n:[{id:'p1',t:'Go-bag Basics',d:'Unlocks the 5-item readiness checklist (self-reported).',c:1},{id:'p2',t:'Household Plan',d:'Extends the checklist to 8 items.',c:1,r:'p1'}]},
+ {b:'Herald',a:180,n:[{id:'h1',t:'Roll Call',d:'Share your calling and level with your party (opt-in).',c:1},{id:'h2',t:'Muster',d:'Propose party objectives from the catalog.',c:2,r:'h1'}]}
+];
+const NODES=TREE.flatMap(b=>b.n.map((n,i)=>Object.assign({b:b.b,i},n)));
+const QUESTS=[
+ {id:'q1',t:'First Light',d:'Open the Overview and the Live Earth Monitor.',xp:20,chk:()=>P.seen.overview&&P.seen.live},
+ {id:'q2',t:'Know Your Place',d:'Choose a place under Near You. The Journey shares nothing about it.',xp:25,chk:()=>!!getNear()},
+ {id:'q3',t:'Lay of the Land',d:'Open the World Map and select a marker.',xp:25,chk:()=>P.seen.map&&P.cnt.mk>0},
+ {id:'q4',t:'Check the Sources',d:'Open 3 different source links.',xp:30,chk:()=>Object.keys(P.src).length>=3},
+ {id:'q5',t:'Pop Quiz Pro',d:'Answer 3 live-data questions correctly (needs Pop Quiz).',xp:40,chk:()=>P.cnt.qok>=3},
+ {id:'q6',t:'Join a Party',d:'Connect to a room under Commons (P2P).',xp:30,chk:()=>P.cnt.room>=1},
+ {id:'q7',t:'Field Notes',d:'Share 2 notes with your party.',xp:30,chk:()=>P.cnt.note>=2},
+ {id:'q8',t:'In Step',d:'Finish a party objective together.',xp:40,chk:()=>P.cnt.obj>=1},
+ {id:'q9',t:'Ready Bag',d:'Tick 5 checklist items (self-reported).',xp:30,chk:()=>nChk()>=5},
+ {id:'q10',t:'Signal Fire',d:'Send a ping on the World Map.',xp:30,chk:()=>P.cnt.ping>=1}
+];
+const GUIDE=[
+ [1,'Earthquake magnitude is logarithmic','Each whole step up the scale releases roughly 32 times more energy, so an M6 is far more than a little bigger than an M5.','USGS'],
+ [1,'Live, Cached, Reference','Every figure here says how it was obtained: Live was fetched just now, Cached is the last good copy saved in your browser, Reference is hand-checked and dated.','This dashboard'],
+ [1,'An anomaly is a difference, not a temperature','A temperature anomaly compares a measurement with an average from a baseline period, so +1 °C means 1 °C above that baseline.','NASA / NOAA'],
+ [1,'This is not an alert system','Feeds can be delayed or incomplete. In an emergency, follow your local authorities.','Preparedness guidance'],
+ [2,'The Kp index','Kp rates geomagnetic disturbance from 0 to 9; 5 or higher counts as a geomagnetic storm (G1 and up).','NOAA SWPC'],
+ [2,'Air quality here is modelled','The Near You air-quality figure is a model estimate on a grid of roughly 11 to 45 km, not a reading from a nearby sensor.','Open-Meteo / Copernicus CAMS'],
+ [2,'Displacement categories are not summed','UNHCR reports refugees, asylum-seekers and others as separate categories, and its headline totals include other sources, so the categories do not simply add up.','UNHCR'],
+ [2,'Empty does not mean quiet','A map with few dots means few reports in these feeds. Coverage of small events varies by region.','USGS / NASA EONET']
+];
+const CHK=['I know which official channel issues emergency alerts where I live.','I have a way to receive alerts, such as a phone setting or a battery radio.','I keep a few days of water and food at home.','My household knows where to meet if we are separated.','I keep copies of key documents and contacts somewhere safe.','I know how to shut off home utilities, or who can.','I have checked on neighbours who may need help in an emergency.','I know where official shelter or evacuation guidance is published for my area.'];
+const CAT=[['Review the Live Earth Monitor','v:live'],['Review the World Map','v:map'],['Review Humanitarian Response','v:humanitarian'],['Try the Near You view','v:near'],['Open a source link','src'],['Answer a Pop Quiz question','quiz']];
+const PK={look:'Look here',ask:'Question',thanks:'Thanks'};
+
+/* ---- B. STATE AND STORAGE (own IndexedDB; wiped by Reset and by the dashboard's "Clear all saved data") ---- */
+const blank=()=>({xp:0,lvl:1,sp:1,skills:{},calling:'',done:{},seen:{},src:{},cnt:{mk:0,qok:0,room:0,note:0,obj:0,ping:0},chk:{},day:'',dxp:0,rested:false,share:false});
+let P=blank(), SEL='', lastV='', ready=false;
+const MP={ctx:null,acts:null,roster:new Map(),obj:new Map(),pings:[]};
+let dbp=null;
+const idb=()=>dbp||(dbp=new Promise((res,rej)=>{if(!window.indexedDB) return rej(new Error('no indexedDB')); const r=indexedDB.open(DB,1); r.onupgradeneeded=()=>r.result.createObjectStore('kv',{keyPath:'k'}); r.onsuccess=()=>res(r.result); r.onerror=()=>rej(r.error);}));
+const store=(mode,fn)=>idb().then(db=>new Promise((res,rej)=>{const tx=db.transaction('kv',mode),rq=fn(tx.objectStore('kv')); tx.oncomplete=()=>res(rq&&rq.result); tx.onerror=()=>rej(tx.error); tx.onabort=()=>rej(tx.error);})).catch(()=>null);
+let st=0; const save=()=>{clearTimeout(st); st=setTimeout(()=>store('readwrite',s=>s.put({k:'me',v:P})),250);};
+const owned=id=>!!P.skills[id];
+const canBuy=n=>!owned(n.id)&&P.sp>=n.c&&(!n.r||owned(n.r));
+const capstone=()=>NODES.every(n=>owned(n.id));
+const nChk=()=>Object.values(P.chk).filter(Boolean).length;
+const tell=(a,d,t)=>{try{Promise.resolve(a.send(d,t?{target:t}:undefined)).catch(()=>{});}catch(e){}};
+
+/* ---- C. XP, QUESTS, TRACKING ---- */
+const LOG=[]; let tt=0;
+function toast(m){LOG.unshift(m); LOG.length=Math.min(LOG.length,6); const t=$('gdToast'); t.textContent=m; t.hidden=false; clearTimeout(tt); tt=setTimeout(()=>{t.hidden=true;},4500); const l=$('gdLog'); if(l) l.innerHTML=LOG.map(x=>'<li>'+esc(x)+'</li>').join('');}
+function award(n,why,free){ // free = one-time rewards (quests, first visits) are exempt from the daily cap
+  if(P.day!==today()){P.day=today(); P.dxp=0; P.rested=false;}
+  let g=n; if(!free){g=Math.min(n,Math.max(0,CAP-P.dxp)); if(g<=0){ if(!P.rested){P.rested=true; toast('Well rested: today\'s XP is full. Nothing is lost; more tomorrow.');} save(); return 0; } P.dxp+=g;}
+  if(P.lvl>=MAXL){P.xp=Math.min(P.xp+g,need(MAXL)); toast('+'+g+' XP · '+why+' · max level'); save(); paintAll(); return g;}
+  P.xp+=g; toast('+'+g+' XP · '+why);
+  while(P.lvl<MAXL&&P.xp>=need(P.lvl)){P.xp-=need(P.lvl); P.lvl++; P.sp++; toast('Level '+P.lvl+'! +1 skill point');}
+  save(); paintAll(); return g;
+}
+function check(){QUESTS.forEach(q=>{if(!P.done[q.id]&&q.chk()){P.done[q.id]=1; toast('Quest complete: '+q.t); award(q.xp,q.t,true);}});}
+const EV={}; const ev=k=>{EV[k]=Date.now();};
+function onView(v){lastV=v; if(!P.seen[v]){P.seen[v]=1; award(5,'explored '+(TAB_LABELS[v]||v),true);} ev('v:'+v); check(); autoDone(); save(); paintAll();}
+
+/* ---- D. SKILLS AND PANELS ---- */
+const PANEL=`
+<h2>Stewardship Journey</h2>
+<p class="intro">A light game layer over real learning. You earn experience by exploring the dashboard, checking sources and, if you choose, working with a party. There are no streaks, rankings, timers or loot boxes, and nothing is lost by skipping a day. Progress is saved only in this browser.</p>
+<div class="facts-card">
+  <div class="card-header"><h3 id="gdName">Newcomer</h3><span class="badge" id="gdLvl"></span></div>
+  <div id="gdXp" class="muted"></div><div class="gd-bar"><i id="gdBar2" style="width:0"></i></div>
+  <div class="form-row" style="margin-top:12px"><label class="muted">Calling <select id="gdCalling" class="select-input"><option value="">Choose a calling…</option></select></label><span id="gdSp" class="muted"></span></div>
+  <p class="fine-print">A calling is a flavour, not a rule: it sets your title, and appears on your party roll only if you share it.</p>
+</div>
+<details class="sources-details" open><summary>Skill constellation</summary>
+  <p class="fine-print" style="margin-top:10px">Spend skill points (one per level, plus one to start: ten in all, enough for every star). Each star unlocks something that works. Select a star to read it.</p>
+  <svg id="gdTree" viewBox="0 0 320 230" role="group" aria-label="Skill constellation: four branches of two skills around a capstone"></svg>
+  <div id="gdNode" class="list-item" aria-live="polite"></div></details>
+<details class="sources-details" open><summary>Quests</summary><ul id="gdQuests" class="gd-plain" style="margin-top:10px"></ul></details>
+<details class="sources-details" open><summary>Party</summary><div id="gdParty" style="margin-top:10px"></div></details>
+<details class="sources-details"><summary>Field Guide</summary><div id="gdGuide" style="margin-top:10px"></div></details>
+<details class="sources-details"><summary>Pop Quiz</summary><div id="gdQuiz" style="margin-top:10px"></div></details>
+<details class="sources-details"><summary>Readiness checklist</summary><div id="gdChk" style="margin-top:10px"></div></details>
+<details class="sources-details"><summary>Recent activity, what is shared, and reset</summary><div class="howto-content" style="margin-top:10px">
+  <ul id="gdLog" class="gd-plain"></ul>
+  <p>Experience comes from exploring, checking sources, quests and quizzes. Repeatable XP stops at 120 a day ("rested"); quests and first visits are one-time and exempt. Level 10 is the end of the road.</p>
+  <p>Shared with a party only if you choose: your calling and level (Roll Call), your completion of an objective you joined, and pings you place. Nothing about your location is ever shared by the Journey. Data lives only in this browser; "Clear all saved data" also resets it.</p>
+  <div id="gdResetArea"></div></div></details>`;
+
+const nodeLabel=(n)=>n.b+' tier '+(n.i+1)+': '+n.t+', '+(owned(n.id)?'unlocked':canBuy(n)?'available, cost '+n.c:'locked');
+const pos=(b,i)=>{const r=[48,88][i], a=b.a*Math.PI/180; return [160+r*Math.cos(a),115+r*Math.sin(a)];};
+function paintTree(){
+  let ln='',nd='';
+  TREE.forEach(b=>{let px=160,py=115; b.n.forEach((n,i)=>{const [x,y]=pos(b,i), s=owned(n.id)?'o':canBuy(n)?'r':'l', sel=SEL===n.id;
+    ln+='<line x1="'+px.toFixed(1)+'" y1="'+py.toFixed(1)+'" x2="'+x.toFixed(1)+'" y2="'+y.toFixed(1)+'" stroke="'+(owned(n.id)?'#fbbf24':'rgba(148,163,184,.35)')+'" stroke-width="1.5"/>'; px=x; py=y;
+    nd+='<g role="button" tabindex="0" data-n="'+n.id+'" aria-label="'+esc(nodeLabel(Object.assign({b:b.b,i},n)))+'"><circle cx="'+x.toFixed(1)+'" cy="'+y.toFixed(1)+'" r="9" fill="'+(s==='o'?'#fbbf24':s==='r'?'#1e3a5f':'#1f2937')+'" stroke="'+(sel?'#fff':s==='r'?'#60a5fa':s==='o'?'#fde68a':'#475569')+'" stroke-width="'+(sel?3:1.5)+'"/><text x="'+x.toFixed(1)+'" y="'+(y+21).toFixed(1)+'" text-anchor="middle" font-size="8" fill="#cbd5e1">'+esc(n.t)+'</text></g>';});});
+  const cp=capstone();
+  nd+='<g aria-hidden="true"><circle cx="160" cy="115" r="11" fill="'+(cp?'#fbbf24':'#1f2937')+'" stroke="'+(cp?'#fff':'#475569')+'" stroke-width="1.5"/><text x="160" y="100" text-anchor="middle" font-size="8" fill="#cbd5e1">'+(cp?'Steward of the Commons':'Capstone')+'</text></g>';
+  $('gdTree').innerHTML=ln+nd;
+  const n=NODES.find(x=>x.id===SEL);
+  $('gdNode').innerHTML=n?('<div class="list-item-title">'+esc(n.b+' · '+n.t)+'</div><div class="fine-print" style="margin:4px 0 8px">'+esc(n.d)+' Cost: '+n.c+' point'+(n.c>1?'s':'')+'.'+(n.r&&!owned(n.r)?' Needs '+esc(NODES.find(x=>x.id===n.r).t)+' first.':'')+'</div>'+(owned(n.id)?'<span class="gd-done">Unlocked</span>':'<button id="gdBuy" class="btn" type="button"'+(canBuy(n)?'':' disabled')+'>Unlock for '+n.c+'</button>')):'<span class="muted">'+(capstone()?'Every star is lit: Steward of the Commons.':'Select a star to see what it does.')+'</span>';
+}
+function paintHud(){
+  const x=need(P.lvl), t=ttl(P.calling,P.lvl,capstone());
+  $('gdHud').innerHTML='Lv '+P.lvl+' · '+esc(t)+'<br><span class="muted">'+(P.lvl>=MAXL?'Max level':P.xp+'/'+x+' XP')+(P.sp?' · '+P.sp+' point'+(P.sp>1?'s':'')+' to spend':'')+'</span><div class="gd-bar"><i style="width:'+(P.lvl>=MAXL?100:Math.round(100*P.xp/x))+'%"></i></div>';
+  $('gdName').textContent=t; $('gdLvl').textContent='Level '+P.lvl; $('gdXp').textContent=P.lvl>=MAXL?'Max level reached.':P.xp+' / '+x+' XP to level '+(P.lvl+1);
+  $('gdBar2').style.width=(P.lvl>=MAXL?100:Math.round(100*P.xp/x))+'%'; $('gdSp').textContent='Skill points: '+P.sp; $('gdCalling').value=P.calling;
+}
+function paintQuests(){$('gdQuests').innerHTML=QUESTS.map(q=>'<li class="gd-row"><span><strong>'+esc(q.t)+'</strong><br><span class="muted">'+esc(q.d)+'</span></span><span class="'+(P.done[q.id]?'gd-done':'muted')+'">'+(P.done[q.id]?'Done ✓':'+'+q.xp+' XP')+'</span></li>').join('');}
+function paintGuide(){
+  const tier=owned('o2')?2:owned('o1')?1:0;
+  $('gdGuide').innerHTML=tier?GUIDE.filter(g=>g[0]<=tier).map(g=>'<div class="gd-row"><span><strong>'+esc(g[1])+'</strong><br><span class="muted">'+esc(g[2])+'</span></span><span class="fine-print" style="margin:0">'+esc(g[3])+'</span></div>').join('')+(tier<2?'<p class="fine-print">Set II unlocks with Pop Quiz.</p>':''):'<p class="muted">Unlock Field Guide in the Observer branch.</p>';
+}
+function paintChk(){
+  const n=owned('p2')?8:owned('p1')?5:0;
+  $('gdChk').innerHTML=n?CHK.slice(0,n).map((t,i)=>'<label class="check-row"><input type="checkbox" data-ci="'+i+'"'+(P.chk[i]?' checked':'')+'> '+esc(t)+'</label>').join('')+'<p class="fine-print">Self-reported and private: ticking is on the honour system and is never shared.'+(n<8?' Household Plan adds three more.':'')+'</p>':'<p class="muted">Unlock Go-bag Basics in the Preparer branch.</p>';
+}
+let QZ=null, lastQ=0;
+const shuffle=a=>{a=a.slice(); for(let i=a.length-1;i>0;i--){const j=rnd(1)[0]%(i+1); [a[i],a[j]]=[a[j],a[i]];} return a;};
+function makeQuiz(){
+  const eq=((typeof layerStatus!=='undefined'&&layerStatus.earthquakes)||{}).data, hz=((typeof layerStatus!=='undefined'&&layerStatus.naturalEvents)||{}).data, out=[];
+  if(eq&&eq.points&&eq.points.length){const t=Math.round(eq.points[0].mag*10)/10; out.push({q:'What was the strongest earthquake magnitude reported in the last 24 hours (from the Live Earth Monitor feed)?',a:'M'+t.toFixed(1),o:shuffle(['M'+t.toFixed(1),'M'+(Math.round((t+.9)*10)/10).toFixed(1),'M'+Math.max(1,Math.round((t-1.1)*10)/10).toFixed(1)])});}
+  if(hz&&hz.counts){const e=Object.entries(hz.counts).sort((a,b)=>b[1]-a[1]); if(e.length>=3&&e[0][1]>e[1][1]) out.push({q:'Which category has the most open events in NASA EONET right now?',a:e[0][0],o:shuffle(e.slice(0,3).map(x=>x[0]))});}
+  return out;
+}
+function paintQuiz(){
+  if(!owned('o2')){$('gdQuiz').innerHTML='<p class="muted">Unlock Pop Quiz in the Observer branch.</p>'; return;}
+  let h='<button id="gdQuizNew" class="btn" type="button">New question</button>';
+  if(QZ==='none') h+='<p class="muted" style="margin-top:8px">No live or cached data to ask about right now, so there is no quiz. Nothing is made up.</p>';
+  else if(QZ) h+='<p style="margin:10px 0 4px">'+esc(QZ.q)+'</p>'+QZ.o.map(o=>'<button type="button" class="btn btn-secondary gd-opt" data-opt="'+esc(o)+'"'+(QZ.fb?' disabled':'')+'>'+esc(o)+'</button>').join('')+(QZ.fb?'<p class="fine-print">'+esc(QZ.fb)+'</p>':'');
+  $('gdQuiz').innerHTML=h;
+}
+function paintAll(){ if(!ready) return; paintHud(); paintTree(); paintQuests(); paintGuide(); paintChk(); paintQuiz(); paintParty(); }
+function buy(id){const n=NODES.find(x=>x.id===id); if(!n||!canBuy(n)) return; P.sp-=n.c; P.skills[id]=1; toast('Unlocked: '+n.t); save(); paintAll(); check();}
+
+/* ---- E. PARTY PLAY: runs on the Commons room (window.CivicCommons). Every message is validated; nothing is sent unless you chose to. ---- */
+const members=()=>MP.ctx?[MP.ctx.self].concat(MP.ctx.peers().filter(id=>!MP.ctx.isMuted(id))):[];
+function sendRoll(target,force){const on=owned('h1')&&P.share&&P.calling; if(MP.acts&&(on||force)) tell(MP.acts.roll,on?{c:P.calling,l:P.lvl}:{c:'',l:0},target);}
+function addObj(n,by){if(!Number.isInteger(n)||n<0||n>=CAT.length) return null; if(!MP.obj.has(n)){ if(MP.obj.size>=3) return null; MP.obj.set(n,{by,t0:Date.now(),done:new Set(),joined:false,fin:false}); } return MP.obj.get(n);}
+function autoDone(){ // report completion only for objectives you joined
+  if(!MP.ctx) return; let ch=false;
+  MP.obj.forEach((o,n)=>{if(o.joined&&!o.done.has(MP.ctx.self)&&(EV[CAT[n][1]]||0)>=o.t0){o.done.add(MP.ctx.self); tell(MP.acts.muster,{k:'done',n}); ch=true;}});
+  if(ch) evalObjs();
+}
+function evalObjs(){
+  const c=MP.ctx; if(!c) return; const m=members();
+  MP.obj.forEach((o,n)=>{if(!o.fin&&m.length>=2&&m.every(x=>o.done.has(x))){o.fin=true; toast('In step: '+CAT[n][0]+' completed together.'); if(o.done.has(c.self)){P.cnt.obj++; award(15,'party objective',true); check(); save();}}});
+  paintParty();
+}
+function addPing(id,k,lat,lon){MP.pings.push({id,k,lat,lon,exp:Date.now()+90000}); if(MP.pings.length>20) MP.pings.shift(); if(window.CivicMap&&window.CivicMap.redraw) window.CivicMap.redraw();}
+let lastPing=0;
+function sendPing(kind,lat,lon){
+  const c=MP.ctx, set=t=>{const m=$('gdPingMsg'); if(m) m.textContent=t||'';};
+  if(!c){set('Join a party first.'); return false;}
+  if(!PK[kind]||!(kind==='look'?owned('c1'):owned('c2'))){set('That ping needs a skill you have not unlocked.'); return false;}
+  if(!(Math.abs(lat)<=90&&Math.abs(lon)<=180)) return false;
+  const now=Date.now(); if(now-lastPing<5000){set('One ping every few seconds.'); return false;} lastPing=now;
+  lat=Math.round(lat*10)/10; lon=Math.round(lon*10)/10;
+  tell(MP.acts.ping,{k:kind,lat,lon}); addPing(c.self,kind,lat,lon); P.cnt.ping++; check(); save(); set(PK[kind]+' sent.'); return true;
+}
+function paintParty(){
+  const el=$('gdParty'); if(!el) return;
+  if(!window.CivicCommons){el.innerHTML='<p class="muted">Party play needs the Commons add-on. Without it, everything else here still works.</p>'; return;}
+  if(!MP.ctx){el.innerHTML='<p class="muted">Not in a party. Join or create a private room under Commons (P2P); the room is your party. Nothing is shared until you opt in below.</p>'; return;}
+  const c=MP.ctx, ps=c.peers();
+  let h='<div class="gd-row"><span>You: '+esc(ttl(P.calling,P.lvl,capstone()))+'</span><label class="check-row"><input type="checkbox" id="gdShare"'+(P.share?' checked':'')+(owned('h1')&&P.calling?'':' disabled')+'> Share my calling and level'+(owned('h1')?(P.calling?'':' (choose a calling first)'):' (unlock Roll Call)')+'</label></div><div id="gdRoster">';
+  h+=ps.length?ps.map(id=>{const r=MP.roster.get(id); return '<div class="gd-row"><span>Peer '+esc(String(id).slice(0,4))+(c.isMuted(id)?' (muted)':'')+': '+(r?esc(ttl(r.c,r.l))+' · Lv '+r.l:'<span class="muted">not sharing</span>')+'</span></div>';}).join(''):'<p class="muted">Waiting for others to join the room.</p>';
+  h+='</div><h4 style="margin:14px 0 4px">Party objectives</h4>';
+  h+=MP.obj.size?Array.from(MP.obj).map(([n,o])=>'<div class="gd-row"><span>'+esc(CAT[n][0])+'<br><span class="muted">'+o.done.size+' of '+members().length+' reported'+(o.fin?' · completed together':'')+'</span></span>'+(o.joined?'<span class="'+(o.done.has(c.self)?'gd-done':'muted')+'">'+(o.done.has(c.self)?'You: done ✓':'Joined')+'</span>':'<button type="button" class="btn btn-secondary" data-join="'+n+'">Join (reports your completion)</button>')+'</div>').join(''):'<p class="muted">No objectives yet.</p>';
+  h+='<div class="form-row" style="margin-top:10px"><select id="gdCat" class="select-input" aria-label="Objective">'+CAT.map((x,i)=>'<option value="'+i+'">'+esc(x[0])+'</option>').join('')+'</select><button id="gdProp" class="btn" type="button"'+(owned('h2')&&MP.obj.size<3?'':' disabled')+'>Propose'+(owned('h2')?'':' (unlock Muster)')+'</button></div>';
+  h+='<p class="fine-print">Pings: '+(owned('c1')?'use Ping mode on the World Map.':'unlock Pin Drop to ping the map.')+'</p>';
+  el.innerHTML=h;
+}
+function hookCC(CC){
+  CC.onConnect(c=>{
+    const a={roll:c.makeAction('roll'),muster:c.makeAction('muster'),ping:c.makeAction('ping')};
+    MP.ctx=c; MP.acts=a; MP.roster.clear(); MP.obj.clear(); MP.pings=[]; P.cnt.room++; check(); save();
+    c.onPeerJoin(id=>{sendRoll(id); tell(a.muster,{k:'snap',objs:Array.from(MP.obj.keys()),mine:Array.from(MP.obj).filter(([n,o])=>o.done.has(c.self)).map(([n])=>n)},id); paintParty();});
+    c.onPeerLeave(id=>{MP.roster.delete(id); MP.obj.forEach(o=>o.done.delete(id)); evalObjs();});
+    a.roll.onMessage=(d,x)=>{if(!c.ok(x.peerId,'r',4,20000)) return; if(d&&CALLINGS.includes(d.c)&&Number.isInteger(d.l)&&d.l>=1&&d.l<=MAXL) MP.roster.set(x.peerId,{c:d.c,l:d.l}); else MP.roster.delete(x.peerId); paintParty();};
+    a.muster.onMessage=(d,x)=>{
+      if(!d||typeof d!=='object'||!c.ok(x.peerId,'m',12,20000)) return;
+      if(d.k==='prop'){const o=addObj(d.n,x.peerId); if(o&&((CAT[d.n][1]==='v:'+lastV))) ev(CAT[d.n][1]);}
+      else if(d.k==='done'){const o=MP.obj.get(d.n); if(o) o.done.add(x.peerId);}
+      else if(d.k==='snap'){(Array.isArray(d.objs)?d.objs.slice(0,3):[]).forEach(n=>addObj(n,x.peerId)); (Array.isArray(d.mine)?d.mine.slice(0,3):[]).forEach(n=>{const o=MP.obj.get(n); if(o) o.done.add(x.peerId);});} // only the sender's own completions are taken from a snapshot
+      else return;
+      evalObjs();};
+    a.ping.onMessage=(d,x)=>{if(!c.ok(x.peerId,'g',3,15000)||!d||!PK[d.k]||typeof d.lat!=='number'||typeof d.lon!=='number'||!(Math.abs(d.lat)<=90&&Math.abs(d.lon)<=180)) return; addPing(x.peerId,d.k,Math.round(d.lat*10)/10,Math.round(d.lon*10)/10);};
+    paintParty();
+  });
+  CC.onLeave(()=>{MP.ctx=null; MP.acts=null; MP.roster.clear(); MP.obj.clear(); MP.pings=[]; paintParty(); if(window.CivicMap&&window.CivicMap.redraw) window.CivicMap.redraw();});
+  CC.onNote(()=>{P.cnt.note++; award(3,'shared a note'); check(); save();});
+  paintParty();
+}
+// Map pings are drawn through the World Map add-on's draw hook, so they survive every redraw.
+const CM=(window.CivicMap=window.CivicMap||{}); CM.hooks=CM.hooks||[];
+function ensurePingRow(){
+  if($('gdPingRow')||!$('mpLayers')) return;
+  const d=document.createElement('div'); d.id='gdPingRow'; d.className='form-row';
+  d.innerHTML='<label class="check-row"><input type="checkbox" id="gdPingOn"> Ping mode: click the map to ping your party</label><select id="gdPingKind" class="select-input" aria-label="Ping type"></select><span id="gdPingMsg" class="muted" role="status"></span>';
+  $('mpLayers').insertAdjacentElement('afterend',d);
+}
+function fillPingKinds(){const s=$('gdPingKind'); if(!s) return; s.innerHTML=Object.entries(PK).filter(([k])=>k==='look'?owned('c1'):owned('c2')).map(([k,v])=>'<option value="'+k+'">'+v+'</option>').join(''); const on=$('gdPingOn'); if(on) on.disabled=!s.options.length||!MP.ctx; const m=$('gdPingMsg'); if(m&&!m.textContent) m.textContent=!owned('c1')?'Unlock Pin Drop to ping.':!MP.ctx?'Join a party to ping.':'';}
+CM.hooks.push((svg,m)=>{
+  ensurePingRow(); fillPingKinds();
+  const live=MP.pings.filter(p=>p.exp>Date.now());
+  svg.insertAdjacentHTML('beforeend',live.map(p=>{const x=m.X(p.lon).toFixed(2), y=m.Y(p.lat).toFixed(2), t=PK[p.k]+' · peer '+String(p.id).slice(0,4);
+    return '<g data-k="ping" data-d="'+esc(t)+'"><circle cx="'+x+'" cy="'+y+'" r="'+(3*m.k).toFixed(2)+'" fill="none" stroke="#34d399" stroke-width="2" vector-effect="non-scaling-stroke"/><circle cx="'+x+'" cy="'+y+'" r="'+(.9*m.k).toFixed(2)+'" fill="#34d399"/><title>'+esc(t)+'</title></g>';}).join(''));
+});
+
+/* ---- F. HOST WIRING ---- */
+VALID_VIEWS.push('journey'); TAB_LABELS.journey='Journey';
+const nav=document.createElement('button');
+nav.className='nav-item'; nav.id='tab-journey'; nav.dataset.view='journey';
+nav.setAttribute('role','tab'); nav.setAttribute('aria-selected','false'); nav.setAttribute('aria-controls','panel-journey');
+nav.innerHTML='<span class="nav-dot"></span>Journey';
+($('tab-overview')||document.querySelector('.nav-item')).insertAdjacentElement('afterend',nav);
+nav.addEventListener('click',()=>switchView('journey'));
+const sec=document.createElement('section');
+sec.className='view'; sec.id='panel-journey'; sec.dataset.view='journey'; sec.tabIndex=0;
+sec.setAttribute('role','tabpanel'); sec.setAttribute('aria-labelledby','tab-journey'); sec.innerHTML=PANEL;
+($('panel-overview')||$('mainContent').firstElementChild).insertAdjacentElement('afterend',sec);
+const hud=document.createElement('button'); hud.id='gdHud'; hud.type='button'; hud.className='refresh-btn'; hud.setAttribute('aria-label','Open your Journey');
+const sf=document.querySelector('.sidebar-footer'); if(sf) sf.insertBefore(hud,sf.firstChild); else document.body.appendChild(hud);
+hud.addEventListener('click',()=>switchView('journey'));
+const toastEl=document.createElement('div'); toastEl.id='gdToast'; toastEl.setAttribute('role','status'); toastEl.setAttribute('aria-live','polite'); toastEl.hidden=true; document.body.appendChild(toastEl);
+$('gdCalling').insertAdjacentHTML('beforeend',CALLINGS.map(c=>'<option>'+c+'</option>').join(''));
+
+$('gdCalling').addEventListener('change',e=>{P.calling=CALLINGS.includes(e.target.value)?e.target.value:''; save(); paintAll(); if(MP.ctx) sendRoll(undefined,true);});
+$('gdTree').addEventListener('click',e=>{const g=e.target.closest('[data-n]'); if(g){SEL=g.dataset.n; paintTree();}});
+$('gdTree').addEventListener('keydown',e=>{if(e.key!=='Enter'&&e.key!==' ') return; const g=e.target.closest('[data-n]'); if(g){e.preventDefault(); SEL=g.dataset.n; paintTree(); const k=document.querySelector('#gdTree [data-n="'+SEL+'"]'); if(k&&k.focus) k.focus();}});
+$('gdNode').addEventListener('click',e=>{if(e.target.id==='gdBuy') buy(SEL);});
+$('gdChk').addEventListener('change',e=>{const i=e.target.dataset&&e.target.dataset.ci; if(i===undefined) return; P.chk[i]=e.target.checked; check(); save(); paintAll();});
+$('gdQuiz').addEventListener('click',e=>{
+  const b=e.target.closest('button'); if(!b) return;
+  if(b.id==='gdQuizNew'){ if(Date.now()-lastQ<1500) return; lastQ=Date.now(); const l=makeQuiz(); QZ=l.length?l[rnd(1)[0]%l.length]:'none'; paintQuiz(); }
+  else if(b.dataset.opt!==undefined&&QZ&&QZ!=='none'&&!QZ.fb){
+    ev('quiz');
+    if(b.dataset.opt===QZ.a){P.cnt.qok++; QZ.fb='Correct. +10 XP (counts toward the daily limit).'; award(10,'quiz answer');} else QZ.fb='Not quite: the answer is '+QZ.a+'. No points lost.';
+    check(); autoDone(); save(); paintQuiz();
+  }
+});
+$('gdParty').addEventListener('change',e=>{if(e.target.id==='gdShare'){P.share=e.target.checked; save(); sendRoll(undefined,true);}});
+$('gdParty').addEventListener('click',e=>{
+  const b=e.target.closest('button'); if(!b||!MP.ctx) return;
+  if(b.dataset.join!==undefined){const o=MP.obj.get(+b.dataset.join); if(o){o.joined=true; autoDone(); paintParty();}}
+  else if(b.id==='gdProp'&&owned('h2')){const n=+$('gdCat').value, o=addObj(n,MP.ctx.self); if(o){tell(MP.acts.muster,{k:'prop',n}); if(CAT[n][1]==='v:'+lastV) ev(CAT[n][1]); paintParty();}}
+});
+function resetArea(){
+  const a=$('gdResetArea'); a.innerHTML='<button id="gdReset" class="btn btn-secondary" type="button">Reset my Journey…</button>';
+  $('gdReset').addEventListener('click',()=>{a.innerHTML='<span class="muted">Erase all progress in this browser?</span> <button id="gdResetYes" class="btn btn-danger" type="button">Yes, reset</button> <button id="gdResetNo" class="btn btn-secondary" type="button">Cancel</button>'; $('gdResetNo').addEventListener('click',resetArea); $('gdResetYes').addEventListener('click',async()=>{await reset(); resetArea(); toast('Journey reset.');});});
+}
+async function reset(){clearTimeout(st); await store('readwrite',s=>s.clear()); P=blank(); SEL=''; QZ=null; paintAll();}
+if(typeof cacheClearAll==='function'){const o=window.cacheClearAll; window.cacheClearAll=async function(){await o.apply(this,arguments); await reset();};}
+document.addEventListener('click',e=>{ // distinct source links opened, and map markers selected
+  const t=e.target; if(!t||!t.closest) return;
+  const a=t.closest('#mainContent a[target="_blank"]'); if(a&&a.href&&Object.keys(P.src).length<50){P.src[a.href]=1; ev('src'); check(); autoDone(); save(); paintAll();}
+  if(t.closest('#mpSvg')){
+    if(t.closest('[data-d]')){P.cnt.mk++; check(); save();}
+    else{const on=$('gdPingOn'), svg=$('mpSvg'); if(on&&on.checked&&svg.getScreenCTM&&svg.getScreenCTM()){const pt=svg.createSVGPoint(); pt.x=e.clientX; pt.y=e.clientY; const p=pt.matrixTransform(svg.getScreenCTM().inverse()); sendPing($('gdPingKind').value,90-p.y,p.x-180);}}
+  }
+});
+window.CivicJourney={v:1,get ready(){return ready;},ping:sendPing,state:()=>JSON.parse(JSON.stringify(P)),
+  reward:(id,xp,label)=>{id='x:'+String(id).slice(0,60); xp=Math.min(40,Math.floor(+xp)||0); if(!ready||xp<=0||P.done[id]) return false; P.done[id]=1; award(xp,String(label||'reward').slice(0,40),true); save(); return true;}}; // one-time, at most 40 XP, for companion add-ons
+
+store('readonly',s=>s.get('me')).then(r=>{
+  if(r&&r.v) P=Object.assign(blank(),r.v,{cnt:Object.assign(blank().cnt,r.v.cnt)});
+  ready=true; resetArea(); paintAll(); if(CM.redraw) CM.redraw(); // adds the ping controls to the map panel
+  const cur=document.querySelector('#mainContent .view.active'); if(cur&&cur.dataset.view) onView(cur.dataset.view);
+  new MutationObserver(()=>{const a=document.querySelector('#mainContent .view.active'), v=a&&a.dataset.view; if(v&&v!==lastV) onView(v);}).observe($('mainContent'),{attributes:true,attributeFilter:['class'],subtree:true});
+  setInterval(()=>{check(); const n=MP.pings.length; MP.pings=MP.pings.filter(p=>p.exp>Date.now()); if(n!==MP.pings.length&&window.CivicMap&&window.CivicMap.redraw) window.CivicMap.redraw();},2000);
+  let tries=0; const tryCC=()=>{if(window.CivicCommons){hookCC(window.CivicCommons); return;} if(++tries<20) setTimeout(tryCC,500); else paintParty();}; tryCC();
+  if(location.hash.replace(/^#\/?/,'')==='journey') switchView('journey',{fromHash:true});
+});
+}catch(err){console.warn('Journey add-on failed to start; the dashboard is unaffected.',err);}
+})();</script>
